@@ -1,0 +1,718 @@
+-- Desert Shrinker
+-- Roblox Studio plugin: makes a desert map smaller and more compact
+-- without removing (or shrinking) the boss.
+--
+-- Install: put this file in your Studio Plugins folder and restart Studio.
+-- Use: Plugins tab -> "Desert Shrinker".
+
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local RunService = game:GetService("RunService")
+local Selection = game:GetService("Selection")
+
+local VOXEL = 4
+local MAX_VOXELS_PER_CALL = 1000000
+local MAX_SOURCE_VOXELS = 64000000
+local MAX_OUTPUT_VOXELS = 4000000
+
+local state = {
+	desert = nil,
+	boss = nil,
+	bossAuto = false,
+	mode = "shrink", -- "shrink" = everything gets smaller, "compact" = things move closer but keep their size
+	includeTerrain = false,
+	keepNpcSize = true,
+	busy = false,
+}
+
+----------------------------------------------------------------------
+-- Geometry helpers
+----------------------------------------------------------------------
+
+-- World-space axis-aligned box around a (possibly rotated) box.
+local function worldAABB(cf, size)
+	local half = size / 2
+	local _, _, _, r00, r01, r02, r10, r11, r12, r20, r21, r22 = cf:GetComponents()
+	local ext = Vector3.new(
+		math.abs(r00) * half.X + math.abs(r01) * half.Y + math.abs(r02) * half.Z,
+		math.abs(r10) * half.X + math.abs(r11) * half.Y + math.abs(r12) * half.Z,
+		math.abs(r20) * half.X + math.abs(r21) * half.Y + math.abs(r22) * half.Z
+	)
+	return cf.Position - ext, cf.Position + ext
+end
+
+local function instanceAABB(inst)
+	if inst:IsA("BasePart") then
+		return worldAABB(inst.CFrame, inst.Size)
+	end
+	local cf, size = inst:GetBoundingBox()
+	return worldAABB(cf, size)
+end
+
+-- Where a point ends up after shrinking around `base`.
+local function squeeze(pos, base, factor, scaleY)
+	return Vector3.new(
+		base.X + (pos.X - base.X) * factor,
+		if scaleY then base.Y + (pos.Y - base.Y) * factor else pos.Y,
+		base.Z + (pos.Z - base.Z) * factor
+	)
+end
+
+----------------------------------------------------------------------
+-- Boss / NPC handling
+----------------------------------------------------------------------
+
+local function isKept(inst, keepers)
+	for _, k in keepers do
+		if inst == k or inst:IsDescendantOf(k) then
+			return true
+		end
+	end
+	return false
+end
+
+local function containsKeeper(inst, keepers)
+	for _, k in keepers do
+		if k:IsDescendantOf(inst) then
+			return true
+		end
+	end
+	return false
+end
+
+local function isCharacter(inst)
+	return inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+local function findBossIn(root, minV, maxV)
+	for _, d in root:GetDescendants() do
+		if isCharacter(d) and string.find(string.lower(d.Name), "boss") then
+			if not minV then
+				return d
+			end
+			local p = d:GetPivot().Position
+			if p.X >= minV.X and p.X <= maxV.X and p.Z >= minV.Z and p.Z <= maxV.Z then
+				return d
+			end
+		end
+	end
+	return nil
+end
+
+-- The boss plus (optionally) every other NPC in the desert. These keep their size.
+local function collectKeepers()
+	local list = {}
+	local function add(inst)
+		for _, k in list do
+			if inst == k or inst:IsDescendantOf(k) then
+				return
+			end
+		end
+		for i = #list, 1, -1 do
+			if list[i]:IsDescendantOf(inst) then
+				table.remove(list, i)
+			end
+		end
+		table.insert(list, inst)
+	end
+
+	if state.boss and state.boss.Parent then
+		add(state.boss)
+	end
+	if state.keepNpcSize then
+		for _, d in state.desert:GetDescendants() do
+			if isCharacter(d) then
+				add(d)
+			end
+		end
+	end
+	return list
+end
+
+local function getDesertBounds(keepers)
+	local minV, maxV
+	local function addPart(p)
+		if isKept(p, keepers) then
+			return
+		end
+		local a, b = worldAABB(p.CFrame, p.Size)
+		if minV then
+			minV = minV:Min(a)
+			maxV = maxV:Max(b)
+		else
+			minV, maxV = a, b
+		end
+	end
+	if state.desert:IsA("BasePart") then
+		addPart(state.desert)
+	end
+	for _, d in state.desert:GetDescendants() do
+		if d:IsA("BasePart") then
+			addPart(d)
+		end
+	end
+	return minV, maxV
+end
+
+----------------------------------------------------------------------
+-- Mode 1: shrink everything (uses Model:ScaleTo, so joints, lights,
+-- particles, etc. are scaled properly)
+----------------------------------------------------------------------
+
+local function shrinkEverything(factor, base, keepers)
+	local desert = state.desert
+
+	-- Park the boss/NPCs somewhere safe so they don't get scaled.
+	local safe = Instance.new("Folder")
+	safe.Name = "DesertShrinker_KeepSafe"
+	safe.Parent = workspace
+	local restore = {}
+	for _, k in keepers do
+		if k:IsDescendantOf(desert) then
+			table.insert(restore, { k, k.Parent })
+			k.Parent = safe
+		end
+	end
+
+	local primary = if desert:IsA("Model") then desert.PrimaryPart else nil
+	local items, target
+	if desert:IsA("BasePart") then
+		items, target = { desert }, desert.Parent
+	else
+		items, target = desert:GetChildren(), desert
+	end
+
+	local temp = Instance.new("Model")
+	temp.Name = "DesertShrinker_Temp"
+	temp.Parent = workspace
+	for _, item in items do
+		item.Parent = temp
+	end
+	temp.WorldPivot = CFrame.new(base)
+	temp:ScaleTo(factor)
+	for _, item in items do
+		item.Parent = target
+	end
+	if primary then
+		desert.PrimaryPart = primary
+	end
+	temp:Destroy()
+
+	for _, r in restore do
+		r[1].Parent = r[2]
+	end
+	safe:Destroy()
+end
+
+----------------------------------------------------------------------
+-- Mode 2: compact (objects keep their size but are pulled closer
+-- together; big flat ground parts get narrower)
+----------------------------------------------------------------------
+
+local function compactDesert(factor, base, keepers, minV, maxV)
+	local extent = math.max(maxV.X - minV.X, maxV.Z - minV.Z)
+	local bigSize = extent * 0.25
+
+	local function moveUnit(unit)
+		local pivot = unit:GetPivot()
+		local newPos = squeeze(pivot.Position, base, factor, false)
+		unit:PivotTo(pivot + (newPos - pivot.Position))
+	end
+
+	local function handlePart(part)
+		local s = part.Size
+		local upright = math.abs(part.CFrame.UpVector.Y) > 0.99
+		if upright and math.max(s.X, s.Z) >= bigSize then
+			-- Ground / floor piece: make it narrower so the area really shrinks.
+			part.Size = Vector3.new(s.X * factor, s.Y, s.Z * factor)
+		end
+		moveUnit(part)
+	end
+
+	local function visit(inst)
+		for _, child in inst:GetChildren() do
+			if isKept(child, keepers) then
+				continue
+			end
+			if child:IsA("Model") then
+				local _, size = child:GetBoundingBox()
+				if containsKeeper(child, keepers) or math.max(size.X, size.Z) >= bigSize then
+					visit(child) -- big container (e.g. "Ground" model): handle its pieces one by one
+				else
+					moveUnit(child) -- rock, cactus, house...: move it as one piece
+				end
+			elseif child:IsA("BasePart") then
+				handlePart(child)
+				visit(child)
+			else
+				visit(child)
+			end
+		end
+	end
+
+	if state.desert:IsA("BasePart") then
+		handlePart(state.desert)
+	end
+	visit(state.desert)
+end
+
+----------------------------------------------------------------------
+-- Terrain (optional): resample the voxels inside the desert's box
+----------------------------------------------------------------------
+
+local function alignDown(v)
+	return math.floor(v / VOXEL) * VOXEL
+end
+
+local function alignUp(v)
+	return math.ceil(v / VOXEL) * VOXEL
+end
+
+local function alignBox(a, b)
+	local lo = Vector3.new(alignDown(a.X), alignDown(a.Y), alignDown(a.Z))
+	local hi = Vector3.new(alignUp(b.X), alignUp(b.Y), alignUp(b.Z))
+	return lo, hi:Max(lo + Vector3.new(VOXEL, VOXEL, VOXEL))
+end
+
+-- Splits an (nx, ny, nz) voxel box into blocks small enough for one terrain call.
+local function forEachBlock(nx, ny, nz, fn)
+	local depth = math.max(1, math.min(nz, math.floor(MAX_VOXELS_PER_CALL / ny)))
+	local width = math.max(1, math.floor(MAX_VOXELS_PER_CALL / (ny * depth)))
+	for xa = 1, nx, width do
+		local xb = math.min(nx, xa + width - 1)
+		for za = 1, nz, depth do
+			local zb = math.min(nz, za + depth - 1)
+			fn(xa, xb, za, zb)
+			task.wait()
+		end
+	end
+end
+
+local function blockRegion(origin, xa, xb, za, zb, ny)
+	return Region3.new(
+		origin + Vector3.new((xa - 1) * VOXEL, 0, (za - 1) * VOXEL),
+		origin + Vector3.new(xb * VOXEL, ny * VOXEL, zb * VOXEL)
+	)
+end
+
+local function shrinkTerrain(minV, maxV, base, factor, scaleY)
+	local terrain = workspace.Terrain
+	local sMin, sMax = alignBox(minV, maxV)
+	local sSize = (sMax - sMin) / VOXEL
+	local nx, ny, nz = sSize.X, sSize.Y, sSize.Z
+	if nx * ny * nz > MAX_SOURCE_VOXELS then
+		error("The desert is too big to shrink its terrain in one go. Turn Terrain off or pick a smaller area.")
+	end
+
+	local oMin, oMax = alignBox(squeeze(sMin, base, factor, scaleY), squeeze(sMax, base, factor, scaleY))
+	local oSize = (oMax - oMin) / VOXEL
+	local ox, oy, oz = oSize.X, oSize.Y, oSize.Z
+	if ox * oy * oz > MAX_OUTPUT_VOXELS then
+		error("The shrunk terrain would still be too big. Try a smaller size % or turn Terrain off.")
+	end
+
+	-- For every output voxel, which source voxel it copies from (nil = outside, becomes air).
+	local function sourceIndices(count, outMin, baseAxis, f, srcMin, n)
+		local list = {}
+		for i = 1, count do
+			local worldOut = outMin + (i - 0.5) * VOXEL
+			local worldSrc = baseAxis + (worldOut - baseAxis) / f
+			local idx = math.floor((worldSrc - srcMin) / VOXEL) + 1
+			list[i] = if idx >= 1 and idx <= n then idx else nil
+		end
+		return list
+	end
+	local sx = sourceIndices(ox, oMin.X, base.X, factor, sMin.X, nx)
+	local sy = sourceIndices(oy, oMin.Y, base.Y, if scaleY then factor else 1, sMin.Y, ny)
+	local sz = sourceIndices(oz, oMin.Z, base.Z, factor, sMin.Z, nz)
+
+	local mats, occs = {}, {}
+	for i = 1, ox do
+		local mi, oi = {}, {}
+		for j = 1, oy do
+			local mj, oj = table.create(oz, Enum.Material.Air), table.create(oz, 0)
+			mi[j], oi[j] = mj, oj
+		end
+		mats[i], occs[i] = mi, oi
+	end
+
+	-- 1. Read the old terrain and sample it down.
+	forEachBlock(nx, ny, nz, function(xa, xb, za, zb)
+		local m, o = terrain:ReadVoxels(blockRegion(sMin, xa, xb, za, zb, ny), VOXEL)
+		for i = 1, ox do
+			local si = sx[i]
+			if si and si >= xa and si <= xb then
+				local srcM, srcO = m[si - xa + 1], o[si - xa + 1]
+				local dstM, dstO = mats[i], occs[i]
+				for k = 1, oz do
+					local sk = sz[k]
+					if sk and sk >= za and sk <= zb then
+						local lk = sk - za + 1
+						for j = 1, oy do
+							local sj = sy[j]
+							if sj then
+								dstM[j][k] = srcM[sj][lk]
+								dstO[j][k] = srcO[sj][lk]
+							end
+						end
+					end
+				end
+			end
+		end
+	end)
+
+	-- 2. Clear the old terrain.
+	forEachBlock(nx, ny, nz, function(xa, xb, za, zb)
+		terrain:FillRegion(blockRegion(sMin, xa, xb, za, zb, ny), VOXEL, Enum.Material.Air)
+	end)
+
+	-- 3. Write the smaller terrain.
+	forEachBlock(ox, oy, oz, function(xa, xb, za, zb)
+		local subM, subO = {}, {}
+		for i = xa, xb do
+			local rowM, rowO = {}, {}
+			for j = 1, oy do
+				local cm, co = {}, {}
+				local srcM, srcO = mats[i][j], occs[i][j]
+				for k = za, zb do
+					cm[k - za + 1] = srcM[k]
+					co[k - za + 1] = srcO[k]
+				end
+				rowM[j], rowO[j] = cm, co
+			end
+			subM[i - xa + 1], subO[i - xa + 1] = rowM, rowO
+		end
+		terrain:WriteVoxels(blockRegion(oMin, xa, xb, za, zb, oy), VOXEL, subM, subO)
+	end)
+end
+
+----------------------------------------------------------------------
+-- Main action
+----------------------------------------------------------------------
+
+local function doShrink(factor)
+	local keepers = collectKeepers()
+	local minV, maxV = getDesertBounds(keepers)
+	if not minV then
+		error("No parts found in the desert (besides the boss/NPCs).")
+	end
+	local base = Vector3.new((minV.X + maxV.X) / 2, minV.Y, (minV.Z + maxV.Z) / 2)
+	local scaleY = state.mode == "shrink"
+
+	-- Remember where the boss/NPCs stand before anything moves.
+	local keeperInfo = {}
+	for _, k in keepers do
+		local pivot = k:GetPivot()
+		local bottom = (instanceAABB(k)).Y
+		table.insert(keeperInfo, { inst = k, pivot = pivot, bottom = bottom })
+	end
+
+	if state.mode == "shrink" then
+		shrinkEverything(factor, base, keepers)
+	else
+		compactDesert(factor, base, keepers, minV, maxV)
+	end
+
+	if state.includeTerrain then
+		shrinkTerrain(minV, maxV, base, factor, scaleY)
+	end
+
+	-- Put the boss/NPCs back at the matching spot in the smaller desert, feet on the ground.
+	for _, info in keeperInfo do
+		local p = info.pivot.Position
+		local newPos = squeeze(p, base, factor, false)
+		if scaleY then
+			local newBottom = base.Y + (info.bottom - base.Y) * factor
+			newPos = Vector3.new(newPos.X, newBottom + (p.Y - info.bottom), newPos.Z)
+		end
+		info.inst:PivotTo(CFrame.new(newPos) * info.pivot.Rotation)
+	end
+
+	return #keepers
+end
+
+----------------------------------------------------------------------
+-- UI
+----------------------------------------------------------------------
+
+local toolbar = plugin:CreateToolbar("Desert Shrinker")
+local toolbarButton = toolbar:CreateButton(
+	"Desert Shrinker",
+	"Make the desert smaller without removing the boss",
+	""
+)
+toolbarButton.ClickableWhenViewportHidden = true
+
+local widget = plugin:CreateDockWidgetPluginGui(
+	"DesertShrinkerWidget",
+	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 320, 460, 260, 360)
+)
+widget.Title = "Desert Shrinker"
+
+toolbarButton.Click:Connect(function()
+	widget.Enabled = not widget.Enabled
+end)
+widget:GetPropertyChangedSignal("Enabled"):Connect(function()
+	toolbarButton:SetActive(widget.Enabled)
+end)
+
+local theme = settings().Studio.Theme
+local function color(c)
+	return theme:GetColor(c)
+end
+
+local frame = Instance.new("ScrollingFrame")
+frame.Size = UDim2.fromScale(1, 1)
+frame.CanvasSize = UDim2.new()
+frame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+frame.ScrollBarThickness = 6
+frame.BorderSizePixel = 0
+frame.BackgroundColor3 = color(Enum.StudioStyleGuideColor.MainBackground)
+frame.Parent = widget
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = frame
+
+local padding = Instance.new("UIPadding")
+padding.PaddingLeft = UDim.new(0, 10)
+padding.PaddingRight = UDim.new(0, 14)
+padding.PaddingTop = UDim.new(0, 10)
+padding.PaddingBottom = UDim.new(0, 10)
+padding.Parent = frame
+
+local order = 0
+local function nextOrder()
+	order += 1
+	return order
+end
+
+local function makeLabel(text, bold)
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 0, 0)
+	label.AutomaticSize = Enum.AutomaticSize.Y
+	label.BackgroundTransparency = 1
+	label.TextWrapped = true
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Font = if bold then Enum.Font.SourceSansBold else Enum.Font.SourceSans
+	label.TextSize = 15
+	label.TextColor3 = color(Enum.StudioStyleGuideColor.MainText)
+	label.Text = text
+	label.LayoutOrder = nextOrder()
+	label.Parent = frame
+	return label
+end
+
+local function makeButton(text)
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(1, 0, 0, 28)
+	button.BackgroundColor3 = color(Enum.StudioStyleGuideColor.Button)
+	button.BorderColor3 = color(Enum.StudioStyleGuideColor.ButtonBorder)
+	button.TextColor3 = color(Enum.StudioStyleGuideColor.ButtonText)
+	button.Font = Enum.Font.SourceSans
+	button.TextSize = 15
+	button.Text = text
+	button.LayoutOrder = nextOrder()
+	button.Parent = frame
+	return button
+end
+
+makeLabel("1. Click your desert (Model or Folder) in the Explorer, then:", true)
+local setDesertButton = makeButton("Use selected as Desert")
+local desertLabel = makeLabel("Desert: (none)")
+
+makeLabel("2. The boss is found automatically. If not, click the boss and:", true)
+local setBossButton = makeButton("Use selected as Boss")
+local bossLabel = makeLabel("Boss: (none)")
+
+makeLabel("3. New size (% of current, 5-95):", true)
+local sizeBox = Instance.new("TextBox")
+sizeBox.Size = UDim2.new(1, 0, 0, 28)
+sizeBox.BackgroundColor3 = color(Enum.StudioStyleGuideColor.InputFieldBackground)
+sizeBox.BorderColor3 = color(Enum.StudioStyleGuideColor.InputFieldBorder)
+sizeBox.TextColor3 = color(Enum.StudioStyleGuideColor.MainText)
+sizeBox.Font = Enum.Font.SourceSans
+sizeBox.TextSize = 15
+sizeBox.Text = "50"
+sizeBox.ClearTextOnFocus = false
+sizeBox.LayoutOrder = nextOrder()
+sizeBox.Parent = frame
+
+makeLabel("4. Options:", true)
+local modeButton = makeButton("")
+local terrainButton = makeButton("")
+local npcButton = makeButton("")
+
+local goButton = makeButton("Shrink Desert!")
+goButton.Font = Enum.Font.SourceSansBold
+goButton.BackgroundColor3 = color(Enum.StudioStyleGuideColor.DialogMainButton)
+goButton.TextColor3 = color(Enum.StudioStyleGuideColor.DialogMainButtonText)
+goButton.Size = UDim2.new(1, 0, 0, 34)
+
+local statusLabel = makeLabel("Tip: you can undo with Ctrl+Z.")
+
+local function setStatus(text)
+	statusLabel.Text = text
+end
+
+local function refresh()
+	if state.desert and state.desert.Parent then
+		local count = 0
+		for _, d in state.desert:GetDescendants() do
+			if d:IsA("BasePart") then
+				count += 1
+			end
+		end
+		desertLabel.Text = string.format("Desert: %s (%d parts)", state.desert.Name, count)
+	else
+		desertLabel.Text = "Desert: (none)"
+	end
+	if state.boss and state.boss.Parent then
+		bossLabel.Text = "Boss: " .. state.boss.Name .. (if state.bossAuto then " (found automatically)" else "")
+	else
+		bossLabel.Text = "Boss: (none) - it will not be protected!"
+	end
+	modeButton.Text = if state.mode == "shrink"
+		then "Mode: Shrink everything (rocks etc. get smaller)"
+		else "Mode: Pull together (rocks etc. keep their size)"
+	terrainButton.Text = "Also shrink Terrain: " .. (if state.includeTerrain then "ON" else "OFF")
+	npcButton.Text = "Other NPCs keep normal size: " .. (if state.keepNpcSize then "ON" else "OFF")
+end
+
+local function getSingleSelection()
+	local selected = Selection:Get()
+	if #selected ~= 1 then
+		setStatus("Select exactly ONE thing in the Explorer first.")
+		return nil
+	end
+	return selected[1]
+end
+
+setDesertButton.MouseButton1Click:Connect(function()
+	local inst = getSingleSelection()
+	if not inst then
+		return
+	end
+	if inst == workspace or inst:IsA("Terrain") or inst:IsA("Camera") then
+		setStatus("Pick the desert's own Model or Folder, not the whole Workspace/Terrain.")
+		return
+	end
+	if not (inst:IsA("Model") or inst:IsA("Folder") or inst:IsA("BasePart")) then
+		setStatus("The desert must be a Model, Folder or Part.")
+		return
+	end
+	if not inst:IsDescendantOf(workspace) then
+		setStatus("The desert must be inside Workspace.")
+		return
+	end
+	state.desert = inst
+
+	if not (state.boss and state.boss.Parent) or state.bossAuto then
+		local found = findBossIn(inst)
+		if not found then
+			local minV, maxV = getDesertBounds({})
+			if minV then
+				found = findBossIn(workspace, minV, maxV)
+			end
+		end
+		state.boss = found
+		state.bossAuto = found ~= nil
+	end
+	setStatus(if state.boss then "Desert set. Check the boss name below." else "Desert set, but no boss was found. Select your boss and click 'Use selected as Boss'.")
+	refresh()
+end)
+
+setBossButton.MouseButton1Click:Connect(function()
+	local inst = getSingleSelection()
+	if not inst then
+		return
+	end
+	if not (inst:IsA("Model") or inst:IsA("BasePart")) then
+		setStatus("The boss must be a Model or Part.")
+		return
+	end
+	if state.desert and (inst == state.desert or state.desert:IsDescendantOf(inst)) then
+		setStatus("That's the desert itself - pick just the boss.")
+		return
+	end
+	state.boss = inst
+	state.bossAuto = false
+	setStatus("Boss set.")
+	refresh()
+end)
+
+modeButton.MouseButton1Click:Connect(function()
+	state.mode = if state.mode == "shrink" then "compact" else "shrink"
+	refresh()
+end)
+
+terrainButton.MouseButton1Click:Connect(function()
+	state.includeTerrain = not state.includeTerrain
+	refresh()
+end)
+
+npcButton.MouseButton1Click:Connect(function()
+	state.keepNpcSize = not state.keepNpcSize
+	refresh()
+end)
+
+sizeBox.FocusLost:Connect(function()
+	local n = tonumber(sizeBox.Text)
+	if n then
+		sizeBox.Text = tostring(math.clamp(math.floor(n + 0.5), 5, 95))
+	else
+		sizeBox.Text = "50"
+	end
+end)
+
+goButton.MouseButton1Click:Connect(function()
+	if state.busy then
+		return
+	end
+	if RunService:IsRunning() then
+		setStatus("Stop the playtest first.")
+		return
+	end
+	if not (state.desert and state.desert.Parent) then
+		setStatus("Pick your desert first (step 1).")
+		return
+	end
+	local pct = tonumber(sizeBox.Text)
+	if not pct or pct < 5 or pct > 95 then
+		setStatus("Size must be a number from 5 to 95.")
+		return
+	end
+
+	state.busy = true
+	setStatus("Shrinking... (big deserts with terrain can take a bit)")
+	goButton.Text = "Working..."
+
+	-- Record as one undo step; if anything fails, Cancel puts everything back.
+	local recording = ChangeHistoryService:TryBeginRecording("Shrink Desert")
+	if not recording then
+		state.busy = false
+		goButton.Text = "Shrink Desert!"
+		setStatus("Studio is busy with another change. Try again in a moment.")
+		return
+	end
+	local ok, result = pcall(doShrink, pct / 100)
+	ChangeHistoryService:FinishRecording(
+		recording,
+		if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+	)
+
+	state.busy = false
+	goButton.Text = "Shrink Desert!"
+	if ok then
+		setStatus(string.format(
+			"Done! Desert is now %d%% of its old size. Kept %d boss/NPC model(s) safe. Ctrl+Z to undo.",
+			pct,
+			result
+		))
+	else
+		setStatus("Something went wrong, nothing was changed:\n" .. tostring(result))
+	end
+	refresh()
+end)
+
+refresh()
