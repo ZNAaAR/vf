@@ -925,12 +925,12 @@ def lin(rgb):
 FIRE_RAMP = [
     # colour parameter g (0 = root, 1 = flame tip) -> sRGB
     (0.00, (0.30, 0.30, 0.32)),     # grey fur at the roots
-    (0.07, (0.42, 0.28, 0.33)),
-    (0.16, (0.80, 0.15, 0.31)),     # deep pink
-    (0.45, (0.98, 0.37, 0.46)),     # hot pink
-    (0.74, (1.00, 0.60, 0.50)),     # coral
-    (0.91, (1.00, 0.84, 0.47)),     # yellow
-    (1.00, (1.00, 0.95, 0.66)),     # white-hot tips
+    (0.06, (0.42, 0.20, 0.30)),
+    (0.14, (0.70, 0.04, 0.28)),     # deep magenta
+    (0.42, (0.95, 0.15, 0.40)),     # hot pink
+    (0.68, (1.00, 0.36, 0.20)),     # orange
+    (0.86, (1.00, 0.62, 0.12)),     # amber
+    (1.00, (1.00, 0.86, 0.28)),     # yellow-hot tips
 ]
 
 
@@ -948,7 +948,7 @@ def fire_color(g):
 
 def fire_glow(g):
     g = np.clip(np.asarray(g, dtype=np.float64), 0, 1)
-    return 0.25 + 4.0 * sstep(0.08, 1.0, g) ** 1.3
+    return 0.15 + 1.5 * sstep(0.10, 1.0, g) ** 1.6
 
 
 def rodrigues(v, axis, ang):
@@ -956,9 +956,9 @@ def rodrigues(v, axis, ang):
     return v * c + np.cross(axis, v) * s + axis * np.dot(axis, v) * (1 - c)
 
 
-def lock_path(start, d0, axis, L, K, curl, flick):
-    """Centre line of a flame lock: bends by `curl` (radians) early and flicks back by `flick` near the tip,
-    giving the S-shaped tongue of a stylised flame."""
+def lock_path(start, d0, axis, L, K, curl, flick, wave=0.0):
+    """Centre line of a flame lock: bends by `curl` (radians) early and flicks back by `flick` near the tip
+    (the S-shaped tongue of a stylised flame), with an optional sideways wave out of the bending plane."""
     d = np.asarray(d0, dtype=np.float64)
     d = d / np.linalg.norm(d)
     a = np.asarray(axis, dtype=np.float64)
@@ -970,23 +970,30 @@ def lock_path(start, d0, axis, L, K, curl, flick):
         t = (k - 0.5) / (K - 1)
         d = rodrigues(d, a, (curl * 2 * (1 - t) + flick * 3 * t * t) / (K - 1))
         pts.append(pts[-1] + d * seg)
-    return np.array(pts), a
+    pts = np.array(pts)
+    if wave:
+        t = np.linspace(0, 1, K)
+        pts += a[None, :] * (wave * L * np.sin(np.pi * t) * np.sin(2.2 * np.pi * t))[:, None]
+    return pts, a
 
 
 def lock_mesh(path, axis, W, thick, segs):
-    """Flattened, tapering tube along `path` (wide across `axis`). Returns V, faces, t-per-vertex."""
+    """Leaf-shaped flame tongue along `path`: wide across `axis`, widest about a third of the way out,
+    then tapering to a sharp tip. Returns V, faces, t-per-vertex."""
     K = len(path)
-    T = np.gradient(path, axis=0)
-    T = normalize(T)
+    T = normalize(np.gradient(path, axis=0))
     B = normalize(axis[None, :] - np.einsum("ij,j->i", T, axis)[:, None] * T)
     N = np.cross(B, T)
     t = np.linspace(0, 1, K)
-    w = 0.5 * W * (1 - t) ** 0.8 * (0.65 + 1.4 * t * (1 - t))
+    w = 0.5 * W * (0.42 + 0.58 * np.sin(0.5 * np.pi * np.clip(t / 0.33, 0, 1))) * (1 - t) ** 0.85
     phi = np.linspace(0, 2 * np.pi, segs, endpoint=False)
-    ring = (B[:, None, :] * np.cos(phi)[None, :, None] * w[:, None, None] +
-            N[:, None, :] * np.sin(phi)[None, :, None] * (w * thick)[:, None, None])
+    # lens-shaped cross-section: thin, sharp-ish edges like a sculpted flame
+    cs = np.cos(phi)
+    sn = np.sign(np.sin(phi)) * np.abs(np.sin(phi)) ** 1.4
+    ring = (B[:, None, :] * cs[None, :, None] * w[:, None, None] +
+            N[:, None, :] * sn[None, :, None] * (w * thick)[:, None, None])
     V = (path[:, None, :] + ring).reshape(-1, 3)
-    tip = path[-1] + T[-1] * w[0] * 0.15
+    tip = path[-1] + T[-1] * w[0] * 0.10
     base = path[0] - T[0] * w[0] * 0.25
     V = np.concatenate([V, tip[None], base[None]])
     tv = np.concatenate([np.repeat(t, segs), [1.0, 0.0]])
@@ -1013,49 +1020,51 @@ def fire_tail_paths(K=18):
     paths = []
     for i in range(FIRE_TAIL_COUNT):
         f = i / (FIRE_TAIL_COUNT - 1) * 2 - 1
-        d0 = normalize(back * 0.66 + up * (0.66 - 0.28 * abs(f)) + side * f * 0.82)
+        d0 = normalize(back * 0.70 + up * (0.70 - 0.30 * abs(f)) + side * f * 0.90)
         axis = np.cross(d0, up)
         if np.linalg.norm(axis) < 1e-6:
             axis = side.copy()
-        L = 0.56 + 0.12 * (1 - abs(f)) + rng.uniform(-0.03, 0.03)
-        path, a = lock_path(FIRE_TAIL_ROOT + side * f * 0.014, d0, axis, L, K,
-                            curl=0.55 + 0.25 * (1 - abs(f)) + rng.uniform(-0.08, 0.08),
-                            flick=-0.95 + rng.uniform(-0.15, 0.15))
+        L = 0.54 + 0.12 * (1 - abs(f)) + rng.uniform(-0.03, 0.03)
+        path, a = lock_path(FIRE_TAIL_ROOT + side * f * 0.016, d0, axis, L, K,
+                            curl=0.60 + 0.25 * (1 - abs(f)) + rng.uniform(-0.08, 0.08),
+                            flick=-1.05 + rng.uniform(-0.15, 0.15), wave=0.05 * (1 if i % 2 else -1))
         paths.append((path, a))
     ANAT[key] = paths
     return paths
 
 
-def build_fire_tails(rng, K=18, segs=12, sub_locks=24, sub_K=14, sub_segs=10):
-    """Nine tails, each a big core flame wrapped in smaller flame locks that curl outward."""
+def build_fire_tails(rng, K=18, segs=12, sub_locks=15, sub_K=14, sub_segs=10):
+    """Nine tails: each a fat core flame wrapped in wide flame tongues that hug it and curl off the edges."""
+    CORE_W = 0.165
     parts = []
     for i, (path, axis) in enumerate(fire_tail_paths(K)):
         Vs, Fs, Gs, off = [], [], [], 0
-        V, F, t = lock_mesh(path, axis, 0.085, 0.62, segs)
+        V, F, t = lock_mesh(path, axis, CORE_W, 0.58, segs)
         Vs.append(V)
         Fs += F
-        Gs.append(t)
+        Gs.append(np.clip(t * 1.05, 0, 1))
         off += len(V)
         T = normalize(np.gradient(path, axis=0))
         Bc = normalize(axis[None, :] - np.einsum("ij,j->i", T, axis)[:, None] * T)
         Nc = np.cross(Bc, T)
         tk = np.linspace(0, 1, len(path))
-        wk = 0.5 * 0.085 * (1 - tk) ** 0.8 * (0.65 + 1.4 * tk * (1 - tk))
-        for _ in range(sub_locks):
-            t0 = rng.uniform(0.06, 0.88)
+        wk = 0.5 * CORE_W * (0.42 + 0.58 * np.sin(0.5 * np.pi * np.clip(tk / 0.33, 0, 1))) * (1 - tk) ** 0.85
+        for j in range(sub_locks):
+            t0 = 0.08 + 0.84 * (j + rng.uniform(0, 1)) / sub_locks
             k = int(round(t0 * (len(path) - 1)))
             th = rng.uniform(0, 2 * np.pi)
-            rb, rn = wk[k], wk[k] * 0.62
-            root = path[k] + (Bc[k] * math.cos(th) * rb + Nc[k] * math.sin(th) * rn) * 0.8
+            rb, rn = wk[k], wk[k] * 0.58
+            root = path[k] + (Bc[k] * math.cos(th) * rb + Nc[k] * math.sin(th) * rn) * 0.62
             radial = normalize(Bc[k] * math.cos(th) * rn + Nc[k] * math.sin(th) * rb)
-            d0 = normalize(T[k] * 1.0 + radial * 0.55)
-            sub_path, sub_axis = lock_path(root, d0, np.cross(d0, radial), rng.uniform(0.13, 0.24) * (1 - 0.45 * t0),
-                                           sub_K, curl=rng.uniform(0.5, 0.95), flick=rng.uniform(-1.3, -0.6))
-            V, F, t = lock_mesh(sub_path, sub_axis, rng.uniform(0.030, 0.046) * (1 - 0.4 * t0),
-                                rng.uniform(0.38, 0.5), sub_segs)
+            d0 = normalize(T[k] * 1.0 + radial * 0.30)
+            sub_path, sub_axis = lock_path(root, d0, np.cross(d0, radial), rng.uniform(0.17, 0.30) * (1 - 0.35 * t0),
+                                           sub_K, curl=rng.uniform(0.7, 1.2), flick=rng.uniform(-1.5, -0.8),
+                                           wave=rng.uniform(-0.08, 0.08))
+            V, F, t = lock_mesh(sub_path, sub_axis, rng.uniform(0.055, 0.085) * (1 - 0.3 * t0),
+                                rng.uniform(0.32, 0.42), sub_segs)
             Vs.append(V)
             Fs += [tuple(x + off for x in f) for f in F]
-            Gs.append(np.clip(t0 + (1 - t0) * 0.55 * t + 0.12 * t ** 3, 0, 1))
+            Gs.append(np.clip(t0 * 0.85 + (1 - t0 * 0.85) * 0.75 * t + 0.1 * t ** 3, 0, 1))
             off += len(V)
         parts.append((f"FireTail{i + 1}", np.concatenate(Vs), Fs, np.concatenate(Gs)))
     return parts
@@ -1083,27 +1092,29 @@ def _spread_sample(P, n, min_dist, rng):
     return np.array(chosen, dtype=np.int64)
 
 
-def build_fire_mane(body_V, body_F, rng, count=150, K=12, segs=10, min_dist=0.011):
-    """Flame locks bursting from the neck, shoulders and throat (rest pose)."""
+def build_fire_mane(body_V, body_F, rng, count=70, K=12, segs=10, min_dist=0.017):
+    """Layered flame mane sweeping back over the neck, shoulders and throat (rest pose)."""
     N = vertex_normals(body_V, body_F)
     x, y, z = body_V[:, 0], body_V[:, 1], body_V[:, 2]
-    cand = (y > -0.252) & (y < -0.055) & (z > 0.205) & (N[:, 2] > -0.35) & (np.abs(x) < 0.095)
-    cand |= (y > -0.245) & (y < -0.16) & (z > 0.18) & (z < 0.30) & (N[:, 1] < -0.2)     # throat ruff
+    cand = (y > -0.250) & (y < -0.060) & (z > 0.215) & (N[:, 2] > -0.30) & (np.abs(x) < 0.095)
+    cand |= (y > -0.240) & (y < -0.16) & (z > 0.18) & (z < 0.30) & (N[:, 1] < -0.2)     # throat ruff
     idx = np.nonzero(cand)[0]
     pick = idx[_spread_sample(body_V[idx], count, min_dist, rng)]
     P, Nrm = body_V[pick], N[pick]
     flow, _, _, _ = flow_at(P, flow_segments())
     up = np.array([0, 0, 1.0])
+    order = np.argsort(-P[:, 1])            # back-most first, so front locks layer over them
     Vs, Fs, Gs, off = [], [], [], 0
-    for p, n, f in zip(P, Nrm, flow):
-        d0 = normalize(f * 0.85 + n * 0.80 + up * 0.20)
-        axis = np.cross(d0, n) * (1 if rng.random() < 0.5 else -1)
+    for p, n, f in zip(P[order], Nrm[order], flow[order]):
+        d0 = normalize(f * 1.0 + n * 0.45 + up * 0.25)
+        axis = np.cross(d0, n)
         if np.linalg.norm(axis) < 1e-6:
             axis = np.array([1.0, 0, 0])
         top = sstep(0.24, 0.32, p[2])
-        path, a = lock_path(p - n * 0.003, d0, axis, rng.uniform(0.075, 0.14) * (0.75 + 0.35 * top), K,
-                            curl=rng.uniform(0.35, 0.8), flick=rng.uniform(-1.2, -0.5))
-        V, F, t = lock_mesh(path, a, rng.uniform(0.018, 0.030), rng.uniform(0.38, 0.5), segs)
+        path, a = lock_path(p - n * 0.004, d0, axis * (1 if rng.random() < 0.5 else -1),
+                            rng.uniform(0.09, 0.17) * (0.75 + 0.35 * top), K,
+                            curl=rng.uniform(0.6, 1.1), flick=rng.uniform(-1.4, -0.7), wave=rng.uniform(-0.1, 0.1))
+        V, F, t = lock_mesh(path, a, rng.uniform(0.036, 0.056), rng.uniform(0.32, 0.42), segs)
         Vs.append(V)
         Fs += [tuple(i + off for i in face) for face in F]
         Gs.append(np.clip(0.03 + 0.97 * t, 0, 1))
@@ -1111,8 +1122,8 @@ def build_fire_mane(body_V, body_F, rng, count=150, K=12, segs=10, min_dist=0.01
     return [("FireMane", np.concatenate(Vs), Fs, np.concatenate(Gs))]
 
 
-def build_paw_fire(rng, per_paw=7, K=12, segs=10):
-    """Flames licking up around each paw."""
+def build_paw_fire(rng, per_paw=5, K=12, segs=10):
+    """Swirling flames licking up around each paw."""
     up = np.array([0, 0, 1.0])
     parts = []
     for joints, key, tag in ((FRONT_LEG, "front", "F"), (HIND_LEG, "hind", "B")):
@@ -1122,15 +1133,16 @@ def build_paw_fire(rng, per_paw=7, K=12, segs=10):
             for k in range(per_paw):
                 ang = 2 * np.pi * k / per_paw + rng.uniform(-0.3, 0.3)
                 o = np.array([math.cos(ang), math.sin(ang), 0.0])
-                root = c + o * rng.uniform(0.024, 0.042) * PAW_SCALE
-                root[2] = 0.002
-                d0 = normalize(up + o * 0.45)
-                path, a = lock_path(root, d0, np.cross(d0, o) * (1 if rng.random() < 0.5 else -1),
-                                    rng.uniform(0.05, 0.11), K, curl=rng.uniform(0.4, 0.8), flick=rng.uniform(-1.3, -0.6))
-                V, F, t = lock_mesh(path, a, rng.uniform(0.016, 0.026), 0.45, segs)
+                tang = np.array([-o[1], o[0], 0.0])
+                root = c + o * rng.uniform(0.026, 0.040) * PAW_SCALE
+                root[2] = 0.003
+                d0 = normalize(up + o * 0.30 + tang * 0.30)
+                path, a = lock_path(root, d0, np.cross(o, d0), rng.uniform(0.06, 0.12), K,
+                                    curl=rng.uniform(0.8, 1.3), flick=rng.uniform(-1.5, -0.8), wave=rng.uniform(-0.1, 0.1))
+                V, F, t = lock_mesh(path, a, rng.uniform(0.030, 0.046), 0.40, segs)
                 Vs.append(V)
                 Fs += [tuple(i + off for i in face) for face in F]
-                Gs.append(np.clip(0.18 + 0.82 * t, 0, 1))
+                Gs.append(np.clip(0.16 + 0.84 * t, 0, 1))
                 off += len(V)
             parts.append((f"FirePaw.{tag}{side}", np.concatenate(Vs), Fs, np.concatenate(Gs)))
     return parts
@@ -1158,7 +1170,7 @@ def create_fire_material():
     mat, nt, out = new_material("Fox_Fire")
     col = attribute(nt, "fire_col")
     glow = attribute(nt, "fire_glow", "Fac")
-    principled(nt, out, **{"Base Color": col, "Roughness": 0.38, "Coat Weight": 0.25,
+    principled(nt, out, **{"Base Color": col, "Roughness": 0.45, "Coat Weight": 0.15,
                            "Emission Color": col, "Emission Strength": glow})
     return mat
 
@@ -2245,16 +2257,9 @@ def configure_render(q):
     scene.render.film_transparent = False
     scene.render.use_simplify = False
     scene.cycles.time_limit = 0
-    try:
-        scene.view_settings.view_transform = "AgX"
-        for look in ("AgX - Medium High Contrast", "Medium High Contrast"):
-            try:
-                scene.view_settings.look = look
-                break
-            except TypeError:
-                continue
-    except TypeError:
-        scene.view_settings.view_transform = "Filmic"
+    # Standard keeps the saturated pink/orange/yellow fire; AgX/Filmic wash bright flames out to pastel
+    scene.view_settings.view_transform = "Standard"
+    scene.view_settings.look = "None"
     try:
         scene.cycles_curves.shape = q["shape"]
         scene.cycles_curves.subdivisions = 2
