@@ -1122,32 +1122,6 @@ def build_fire_mane(body_V, body_F, rng, count=42, K=12, segs=10, min_dist=0.022
     return [("FireMane", np.concatenate(Vs), Fs, np.concatenate(Gs))]
 
 
-def build_paw_fire(rng, per_paw=5, K=12, segs=10):
-    """Swirling flames licking up around each paw."""
-    up = np.array([0, 0, 1.0])
-    parts = []
-    for joints, key, tag in ((FRONT_LEG, "front", "F"), (HIND_LEG, "hind", "B")):
-        for s, side in ((1, "L"), (-1, "R")):
-            c = np.array(_side(joints["paw"], s, STANCE[key][s]))
-            Vs, Fs, Gs, off = [], [], [], 0
-            for k in range(per_paw):
-                ang = 2 * np.pi * k / per_paw + rng.uniform(-0.3, 0.3)
-                o = np.array([math.cos(ang), math.sin(ang), 0.0])
-                tang = np.array([-o[1], o[0], 0.0])
-                root = c + o * rng.uniform(0.026, 0.040) * PAW_SCALE
-                root[2] = 0.003
-                d0 = normalize(up + o * 0.30 + tang * 0.30)
-                path, a = lock_path(root, d0, np.cross(o, d0), rng.uniform(0.06, 0.12), K,
-                                    curl=rng.uniform(0.8, 1.3), flick=rng.uniform(-1.5, -0.8), wave=rng.uniform(-0.1, 0.1))
-                V, F, t = lock_mesh(path, a, rng.uniform(0.030, 0.046), 0.40, segs)
-                Vs.append(V)
-                Fs += [tuple(i + off for i in face) for face in F]
-                Gs.append(np.clip(0.16 + 0.84 * t, 0, 1))
-                off += len(V)
-            parts.append((f"FirePaw.{tag}{side}", np.concatenate(Vs), Fs, np.concatenate(Gs)))
-    return parts
-
-
 def fire_object(name, V, F, g, col, mat, subsurf=True):
     me = bpy.data.meshes.new(name)
     me.from_pydata([tuple(v) for v in V], [], [tuple(f) for f in F])
@@ -1176,11 +1150,11 @@ def create_fire_material():
 
 
 def create_fire(col, M, body_V, body_F, rng):
-    """HQ flames: nine tails, mane, burning coat, head crown and paw fire (rest pose)."""
+    """HQ flames: nine tails, mane, burning coat and head crown (rest pose); no fire on the feet."""
     t0 = time.time()
     objs = {}
     parts = (build_fire_tails(rng) + build_fire_mane(body_V, body_F, rng) + build_fire_body(body_V, body_F, rng) +
-             build_fire_head(body_V, body_F, rng) + build_paw_fire(rng))
+             build_fire_head(body_V, body_F, rng))
     for name, V, F, g in parts:
         objs[name] = fire_object(f"Fire_{name}", V, F, g, col, M["fire"])
     log(f"fire: {len(objs)} flame groups ({time.time() - t0:.1f}s)")
@@ -1590,7 +1564,7 @@ def build_fire_body(body_V, body_F, rng, count=36, K=12, segs=10, min_dist=0.032
     for name, cand, n_pick, Lr, Wr, md in (
             ("FireBody", (y > -0.075) & (y < 0.215) & (z > 0.200) & (N[:, 2] > -0.25), count,
              (0.06, 0.13), (0.030, 0.050), min_dist),
-            ("FireLegs", (z > 0.035) & (z < 0.175) & (np.abs(x) > 0.025) & (N[:, 2] > -0.5), leg_count,
+            ("FireLegs", (z > 0.090) & (z < 0.175) & (np.abs(x) > 0.025) & (N[:, 2] > -0.5), leg_count,
              (0.035, 0.07), (0.018, 0.030), min_dist * 0.8)):
         idx = np.nonzero(cand)[0]
         pick = idx[_spread_sample(body_V[idx], n_pick, md, rng)]
@@ -2704,13 +2678,12 @@ def _distance_weights(obj, rig_bones, allowed, adjust=None):
 
 
 def create_roblox_flames(col, body_V, body_F, rng, out_dir):
-    """Low-poly flames (tails, mane, coat, head crown, paws) as their own mesh with a fire-gradient texture.
+    """Low-poly flames (tails, mane, coat, head crown) as their own mesh with a fire-gradient texture.
     In Roblox Studio this MeshPart can stay textured or be switched to Neon for a real glow."""
     parts = (build_fire_tails(rng, K=8, segs=6, sub_locks=9, sub_K=6, sub_segs=5) +
              build_fire_mane(body_V, body_F, rng, count=34, K=6, segs=5, min_dist=0.024) +
              build_fire_body(body_V, body_F, rng, count=22, K=6, segs=5, min_dist=0.034, leg_count=8) +
-             build_fire_head(body_V, body_F, rng, count=12, K=5, segs=5, min_dist=0.015) +
-             build_paw_fire(rng, per_paw=4, K=6, segs=5))
+             build_fire_head(body_V, body_F, rng, count=12, K=5, segs=5, min_dist=0.015))
     Vs, Fs, Gs, ids, names, off = [], [], [], [], [], 0
     for i, (name, V, F, g) in enumerate(parts):
         Vs.append(V)
@@ -2773,10 +2746,8 @@ def skin_flames(obj, rig_bones, part_of_vertex, part_names, rest_V):
             ok = trunk + [n for n in legs if "Upper" in n]
         elif pname == "FireLegs":
             ok = legs
-        else:                                    # FirePaw.FL / FirePaw.BR ...
-            tag = pname.split(".")[1]
-            leg = "Front" if tag[0] == "F" else "Back"
-            ok = [f"{leg}Foot.{tag[1]}", f"{leg}LowerLeg.{tag[1]}"]
+        else:
+            raise BuildError(f"No skin-weight rule for flame part {pname}")
         for n in ok:
             allowed[m, idx[n]] = True
 
