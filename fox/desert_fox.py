@@ -923,14 +923,14 @@ def lin(rgb):
 
 
 FIRE_RAMP = [
-    # colour parameter g (0 = root, 1 = flame tip) -> sRGB
-    (0.00, (0.30, 0.30, 0.32)),     # grey fur at the roots
-    (0.06, (0.42, 0.20, 0.30)),
-    (0.14, (0.70, 0.04, 0.28)),     # deep magenta
-    (0.42, (0.95, 0.15, 0.40)),     # hot pink
-    (0.68, (1.00, 0.36, 0.20)),     # orange
-    (0.86, (1.00, 0.62, 0.12)),     # amber
-    (1.00, (1.00, 0.86, 0.28)),     # yellow-hot tips
+    # colour parameter g (0 = root, 1 = flame tip) -> sRGB; the roots match the burning coat
+    (0.00, (0.45, 0.05, 0.16)),     # dark crimson, like the coat at the skin
+    (0.10, (0.72, 0.10, 0.28)),     # coat magenta-red
+    (0.30, (0.90, 0.16, 0.38)),     # hot pink
+    (0.55, (1.00, 0.32, 0.26)),     # red-orange
+    (0.75, (1.00, 0.50, 0.14)),     # orange
+    (0.90, (1.00, 0.70, 0.14)),     # amber
+    (1.00, (1.00, 0.88, 0.32)),     # yellow-hot tips
 ]
 
 
@@ -977,7 +977,7 @@ def lock_path(start, d0, axis, L, K, curl, flick, wave=0.0):
     return pts, a
 
 
-def lock_mesh(path, axis, W, thick, segs):
+def lock_mesh(path, axis, W, thick, segs, root=0.15):
     """Leaf-shaped flame tongue along `path`: wide across `axis`, widest about a third of the way out,
     then tapering to a sharp tip. Returns V, faces, t-per-vertex."""
     K = len(path)
@@ -985,7 +985,7 @@ def lock_mesh(path, axis, W, thick, segs):
     B = normalize(axis[None, :] - np.einsum("ij,j->i", T, axis)[:, None] * T)
     N = np.cross(B, T)
     t = np.linspace(0, 1, K)
-    w = 0.5 * W * (0.42 + 0.58 * np.sin(0.5 * np.pi * np.clip(t / 0.33, 0, 1))) * (1 - t) ** 0.85
+    w = 0.5 * W * (root + (1 - root) * np.sin(0.5 * np.pi * np.clip(t / 0.38, 0, 1))) * (1 - t) ** 0.85
     phi = np.linspace(0, 2 * np.pi, segs, endpoint=False)
     # lens-shaped cross-section: thin, sharp-ish edges like a sculpted flame
     cs = np.cos(phi)
@@ -1039,7 +1039,7 @@ def build_fire_tails(rng, K=18, segs=12, sub_locks=15, sub_K=14, sub_segs=10):
     parts = []
     for i, (path, axis) in enumerate(fire_tail_paths(K)):
         Vs, Fs, Gs, off = [], [], [], 0
-        V, F, t = lock_mesh(path, axis, CORE_W, 0.58, segs)
+        V, F, t = lock_mesh(path, axis, CORE_W, 0.58, segs, root=0.45)
         Vs.append(V)
         Fs += F
         Gs.append(np.clip(t * 1.05, 0, 1))
@@ -1048,7 +1048,7 @@ def build_fire_tails(rng, K=18, segs=12, sub_locks=15, sub_K=14, sub_segs=10):
         Bc = normalize(axis[None, :] - np.einsum("ij,j->i", T, axis)[:, None] * T)
         Nc = np.cross(Bc, T)
         tk = np.linspace(0, 1, len(path))
-        wk = 0.5 * CORE_W * (0.42 + 0.58 * np.sin(0.5 * np.pi * np.clip(tk / 0.33, 0, 1))) * (1 - tk) ** 0.85
+        wk = 0.5 * CORE_W * (0.45 + 0.55 * np.sin(0.5 * np.pi * np.clip(tk / 0.38, 0, 1))) * (1 - tk) ** 0.85
         for j in range(sub_locks):
             t0 = 0.08 + 0.84 * (j + rng.uniform(0, 1)) / sub_locks
             k = int(round(t0 * (len(path) - 1)))
@@ -1092,7 +1092,7 @@ def _spread_sample(P, n, min_dist, rng):
     return np.array(chosen, dtype=np.int64)
 
 
-def build_fire_mane(body_V, body_F, rng, count=70, K=12, segs=10, min_dist=0.017):
+def build_fire_mane(body_V, body_F, rng, count=42, K=12, segs=10, min_dist=0.022):
     """Layered flame mane sweeping back over the neck, shoulders and throat (rest pose)."""
     N = vertex_normals(body_V, body_F)
     x, y, z = body_V[:, 0], body_V[:, 1], body_V[:, 2]
@@ -1111,7 +1111,7 @@ def build_fire_mane(body_V, body_F, rng, count=70, K=12, segs=10, min_dist=0.017
         if np.linalg.norm(axis) < 1e-6:
             axis = np.array([1.0, 0, 0])
         top = sstep(0.24, 0.32, p[2])
-        path, a = lock_path(p - n * 0.004, d0, axis * (1 if rng.random() < 0.5 else -1),
+        path, a = lock_path(p - n * 0.007, d0, axis * (1 if rng.random() < 0.5 else -1),
                             rng.uniform(0.09, 0.17) * (0.75 + 0.35 * top), K,
                             curl=rng.uniform(0.6, 1.1), flick=rng.uniform(-1.4, -0.7), wave=rng.uniform(-0.1, 0.1))
         V, F, t = lock_mesh(path, a, rng.uniform(0.036, 0.056), rng.uniform(0.32, 0.42), segs)
@@ -1580,7 +1580,7 @@ def ear_colors(region, uv):
     return np.where(region[:, None] < 0.5, inner, outer)
 
 
-def build_fire_body(body_V, body_F, rng, count=95, K=12, segs=10, min_dist=0.020, leg_count=40):
+def build_fire_body(body_V, body_F, rng, count=36, K=12, segs=10, min_dist=0.032, leg_count=12):
     """Flames rising from the back, flanks, hips and legs: the coat itself burns."""
     N = vertex_normals(body_V, body_F)
     x, y, z = body_V[:, 0], body_V[:, 1], body_V[:, 2]
@@ -1602,19 +1602,19 @@ def build_fire_body(body_V, body_F, rng, count=95, K=12, segs=10, min_dist=0.020
             axis = np.cross(d0, n)
             if np.linalg.norm(axis) < 1e-6:
                 axis = np.array([1.0, 0, 0])
-            path, a = lock_path(p - n * 0.003, d0, axis * (1 if rng.random() < 0.5 else -1),
+            path, a = lock_path(p - n * 0.007, d0, axis * (1 if rng.random() < 0.5 else -1),
                                 rng.uniform(*Lr), K, curl=rng.uniform(0.5, 1.0), flick=rng.uniform(-1.3, -0.6),
                                 wave=rng.uniform(-0.1, 0.1))
             V, F, t = lock_mesh(path, a, rng.uniform(*Wr), rng.uniform(0.32, 0.42), segs)
             Vs.append(V)
             Fs += [tuple(i + off for i in face) for face in F]
-            Gs.append(np.clip(0.10 + 0.90 * t, 0, 1))
+            Gs.append(np.clip(0.02 + 0.98 * t, 0, 1))
             off += len(V)
         out.append((name, np.concatenate(Vs), Fs, np.concatenate(Gs)))
     return out
 
 
-def build_fire_head(body_V, body_F, rng, count=34, K=10, segs=8, min_dist=0.010):
+def build_fire_head(body_V, body_F, rng, count=20, K=10, segs=8, min_dist=0.013):
     """A crown of flames on the head and cheeks sweeping back (rest pose; posed with the head)."""
     N = vertex_normals(body_V, body_F)
     x, y, z = body_V[:, 0], body_V[:, 1], body_V[:, 2]
@@ -1634,13 +1634,13 @@ def build_fire_head(body_V, body_F, rng, count=34, K=10, segs=8, min_dist=0.010)
         axis = np.cross(d0, n)
         if np.linalg.norm(axis) < 1e-6:
             axis = np.array([1.0, 0, 0])
-        path, a = lock_path(p - n * 0.002, d0, axis * (1 if rng.random() < 0.5 else -1),
+        path, a = lock_path(p - n * 0.004, d0, axis * (1 if rng.random() < 0.5 else -1),
                             rng.uniform(0.03, 0.065), K, curl=rng.uniform(0.5, 1.0), flick=rng.uniform(-1.3, -0.6),
                             wave=rng.uniform(-0.08, 0.08))
         V, F, t = lock_mesh(path, a, rng.uniform(0.014, 0.024), 0.4, segs)
         Vs.append(V)
         Fs += [tuple(i + off for i in face) for face in F]
-        Gs.append(np.clip(0.12 + 0.88 * t, 0, 1))
+        Gs.append(np.clip(0.02 + 0.98 * t, 0, 1))
         off += len(V)
     return [("FireHead", np.concatenate(Vs), Fs, np.concatenate(Gs))]
 
@@ -2707,9 +2707,9 @@ def create_roblox_flames(col, body_V, body_F, rng, out_dir):
     """Low-poly flames (tails, mane, coat, head crown, paws) as their own mesh with a fire-gradient texture.
     In Roblox Studio this MeshPart can stay textured or be switched to Neon for a real glow."""
     parts = (build_fire_tails(rng, K=8, segs=6, sub_locks=9, sub_K=6, sub_segs=5) +
-             build_fire_mane(body_V, body_F, rng, count=55, K=6, segs=5, min_dist=0.018) +
-             build_fire_body(body_V, body_F, rng, count=45, K=6, segs=5, min_dist=0.026, leg_count=20) +
-             build_fire_head(body_V, body_F, rng, count=16, K=5, segs=5, min_dist=0.013) +
+             build_fire_mane(body_V, body_F, rng, count=34, K=6, segs=5, min_dist=0.024) +
+             build_fire_body(body_V, body_F, rng, count=22, K=6, segs=5, min_dist=0.034, leg_count=8) +
+             build_fire_head(body_V, body_F, rng, count=12, K=5, segs=5, min_dist=0.015) +
              build_paw_fire(rng, per_paw=4, K=6, segs=5))
     Vs, Fs, Gs, ids, names, off = [], [], [], [], [], 0
     for i, (name, V, F, g) in enumerate(parts):
