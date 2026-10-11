@@ -1048,7 +1048,7 @@ def create_materials():
         c2 = mix_color(nt, map_range(nt, info.outputs["Intercept"], 0.55, 1.0), c1, tip)
         gamma = nt.nodes.new("ShaderNodeGamma")
         _set(nt, gamma.inputs["Color"], c2)
-        gamma.inputs["Gamma"].default_value = 1.9
+        gamma.inputs["Gamma"].default_value = 2.8   # hair multiple scattering lightens colours a lot
         hair = nt.nodes.new("ShaderNodeBsdfHairPrincipled")
         hair.parametrization = "COLOR"
         _set(nt, hair.inputs["Color"], gamma.outputs[0])
@@ -1241,11 +1241,11 @@ def ear_surface(u, v, H, W, D):
     w = 0.5 * W * np.power(np.clip(1 - u, 0, 1), 0.62) * (1.0 + 0.32 * u * (1 - u)) + 0.0004
     cup = D * (1 - v * v) * np.power(np.clip(1 - u, 0, 1), 0.55)
     lean = 0.011 * u * u
-    curl = -0.0022 * np.power(np.abs(v), 6) * np.sin(np.pi * np.clip(u, 0, 1))  # rim curls forward
+    curl = -0.0060 * np.power(np.abs(v), 4) * np.sin(np.pi * np.clip(u * 0.9 + 0.1, 0, 1))  # rim curls forward
     return np.stack([w * v, cup + lean + curl, u * H], -1)
 
 
-def build_ear_geometry(side, nu, nv, H=0.150, W=0.074, D=0.022, asym=0.0, notches=()):
+def build_ear_geometry(side, nu, nv, H=0.150, W=0.074, D=0.033, asym=0.0, notches=()):
     """Returns (V, F, region, uv) for a thick, cupped ear with a rounded, battle-torn rim.
     region: 0 front (inner), 1 back (outer). V is relative to the ear root."""
     H = H * (1 + asym)
@@ -1257,7 +1257,7 @@ def build_ear_geometry(side, nu, nv, H=0.150, W=0.074, D=0.022, asym=0.0, notche
     for u0, depth, width, edge in notches:
         bite = depth * np.exp(-((U - u0) / width) ** 2) * sstep(0.35, 1.0, Vv * edge)
         front[..., 0] *= 1 - bite
-    thick = 0.0024 * (1 - 0.55 * U) + 0.0021 * np.power(np.abs(Vv), 8)
+    thick = 0.0030 * (1 - 0.55 * U) + 0.0026 * np.power(np.abs(Vv), 8)
     back = front.copy()
     back[..., 1] += thick + 0.0045 * (1 - Vv * Vv) * np.power(np.clip(1 - U, 0, 1), 0.5)  # convex back
     ncols = nv + 1
@@ -1693,7 +1693,7 @@ def grow_strands(root, n, flow, length, lift, rng, k_pts, frizz=0.12, gravity=0.
     pts[:, 0] = root - n * sink
     grav = (gravity * sstep(0.008, 0.04, length))[:, None]
     for k in range(1, k_pts):
-        target = normalize(tang + g * grav)
+        target = normalize(tang * (1 - lift) + n * lift + g * grav)
         d = normalize(d * (1 - bend) + target * bend + rng.normal(0, frizz, d.shape))
         p = pts[:, k - 1] + d * seg
         h = np.einsum("ij,ij->i", p - root, n)
@@ -1867,7 +1867,7 @@ def create_ear_fur(q, ears, col, M, rng):
         near = np.fromiter((tree.find(p)[1] for p in P), dtype=np.int64, count=len(P))
         u, v = uv[near, 0], uv[near, 1]
         flow = np.tile(z, (len(P), 1))
-        L = np.full(len(P), 0.0034) * rng.uniform(0.8, 1.2, len(P))
+        L = np.full(len(P), 0.0055) * rng.uniform(0.8, 1.25, len(P))
         pts = grow_strands(P, Nrm, flow, L, np.full(len(P), 0.12), rng, 4, frizz=0.08, gravity=0.0, bend=0.3)
         base = ear_colors(np.ones(len(P)), np.stack([u, v], 1))
         r = np.full(len(P), 0.00005)
@@ -1961,8 +1961,8 @@ def create_lighting_rig(col, S):
 
     area("Light_Key", (-1.20, -1.30, 1.30), 70.0, 0.55, (1.0, 0.90, 0.78))
     area("Light_Fill", (1.40, -1.10, 0.25), 6.0, 1.6, (0.62, 0.72, 1.0))
-    area("Light_Rim", (0.60, 1.15, 0.95), 190.0, 0.6, (1.0, 0.55, 0.22))
-    area("Light_Rim2", (-0.90, 0.95, 0.70), 110.0, 0.5, (1.0, 0.62, 0.30))
+    area("Light_Rim", (0.60, 1.15, 0.95), 105.0, 0.6, (1.0, 0.55, 0.22))
+    area("Light_Rim2", (-0.90, 0.95, 0.70), 60.0, 0.5, (1.0, 0.62, 0.30))
     world = bpy.data.worlds.get("Studio_World") or bpy.data.worlds.new("Studio_World")
     if bpy.app.version < (5, 0, 0) and not world.use_nodes:
         world.use_nodes = True
@@ -2062,8 +2062,8 @@ def fur_hull_sdf_factory(segs, detail):
         if near.any():
             Q = P[near]
             _, L, _, clump = flow_at(Q, segs)
-            spikes = np.abs(value_noise(Q, 260.0, seed=7)) * clump * 1.6
-            tuft = 0.70 + 0.30 * fbm(Q, 120.0, 2, seed=31) + spikes + detail * 0.2 * np.abs(value_noise(Q, 420.0, seed=8))
+            spikes = sstep(0.20, 0.85, value_noise(Q, 110.0, seed=7)) * clump * 1.4
+            tuft = 0.80 + 0.18 * fbm(Q, 45.0, 2, seed=31) + spikes + detail * 0.10 * value_noise(Q, 300.0, seed=8)
             Pm = Q.copy()
             Pm[:, 0] = np.abs(Pm[:, 0])
             bare = sstep(0.003, 0.007, mouth_cavity_sdf(Pm))       # keep the mouth open
@@ -2076,7 +2076,7 @@ def tail_hull_sdf(P):
     d = tail_sdf(P)
     t = np.clip((TAIL_POINTS[0, 2] - P[:, 2]) / (TAIL_POINTS[0, 2] - TAIL_POINTS[-1, 2]), 0, 1)
     fur = 0.036 + 0.032 * np.sin(np.pi * np.clip(t * 0.9 + 0.12, 0, 1)) ** 0.7
-    tuft = 0.80 + 0.25 * fbm(P, 90.0, 2, seed=41) + 0.35 * np.abs(value_noise(P, 200.0, seed=43))
+    tuft = 0.85 + 0.15 * fbm(P, 40.0, 2, seed=41) + 0.25 * sstep(0.3, 0.9, value_noise(P, 80.0, seed=43))
     return d - fur * tuft
 
 
@@ -2159,7 +2159,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
 
     lo_V, lo_F = surface_nets(fur_hull_sdf_factory(segs, 0.0), box[0], box[1], 0.0030)
     lo_V, lo_F = _largest_component(lo_V, lo_F)
-    lo_V = taubin_smooth(lo_V, lo_F, iters=4)
+    lo_V = taubin_smooth(lo_V, lo_F, iters=6)
     body_tmp = mesh_from_numpy("tmp_body", lo_V, lo_F, col)
     _voxel_remesh(body_tmp, 0.0042)          # spiky tufts thinner than a voxel leave non-manifold edges
     _decimate(body_tmp, ROBLOX_BODY_TRIS)
@@ -2167,7 +2167,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
     bpy.data.meshes.remove(body_tmp.data)
     add_part("Rbx_Body", bV, bT)
     tl_V, tl_F = surface_nets(tail_hull_sdf, TAIL_HULL_BOX[0], TAIL_HULL_BOX[1], 0.0040)
-    tl_V = taubin_smooth(tl_V, tl_F, iters=4)
+    tl_V = taubin_smooth(tl_V, tl_F, iters=6)
     tail_tmp = mesh_from_numpy("tmp_tail", tl_V, tl_F, col)
     _voxel_remesh(tail_tmp, 0.0050)
     _decimate(tail_tmp, 2400)
