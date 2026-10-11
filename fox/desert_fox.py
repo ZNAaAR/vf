@@ -17,9 +17,11 @@ Built and tested on Blender 5.2 LTS. Needs nothing beyond stock Blender
 (it only uses bpy, bmesh, mathutils and the bundled numpy).
 
 HOW TO RUN
-  In Blender:  Scripting workspace -> Open -> desert_fox.py -> Run Script.
+  In Blender:  File > New > General, then Scripting workspace -> Open -> desert_fox.py -> Run Script.
                (Edit the SETTINGS block below first if you want renders or another quality.)
-  Headless:    blender --background --python desert_fox.py -- --quality high --render
+               Progress shows in the status bar; details print to the system console
+               (Windows: Window > Toggle System Console).
+  Headless:    blender --background --python-exit-code 1 --python desert_fox.py -- --quality high --render
   Options after "--":
       --quality draft|medium|high   fur density / mesh resolution / samples (default: medium)
       --render                      render the 5 presentation views + a Roblox preview
@@ -48,6 +50,7 @@ SETTINGS = {
     "views": None,            # e.g. ["front_3q", "face_closeup"]
     "build_roblox": True,
     "out_dir": os.path.join(os.path.expanduser("~"), "DesertFox_Output"),
+    "replace_open_file": False,   # True = allow wiping the currently open (saved/edited) .blend
 }
 
 QUALITY = {
@@ -791,6 +794,7 @@ def apply_modifiers(obj):
 
 
 def parent_keep(child, parent):
+    bpy.context.view_layer.update()   # matrix_world is stale until the depsgraph is evaluated
     child.parent = parent
     child.matrix_parent_inverse = parent.matrix_world.inverted()
 
@@ -1062,7 +1066,10 @@ def create_materials():
     # ears: vertex-coloured skin with light translucency
     mat, nt, out = new_material("Fox_Ear")
     col = attribute(nt, "ear_col")
-    bsdf = principled(nt, out, **{"Base Color": col, "Roughness": 0.72})
+    bsdf = principled(nt, out, **{"Base Color": col, "Roughness": 0.88})
+    set_input(bsdf, "Specular IOR Level", 0.12)        # matte, velvety ear skin (no grazing sheen)
+    set_input(bsdf, "Sheen Weight", 0.35)
+    set_input(bsdf, "Sheen Roughness", 0.6)
     try:
         bsdf.inputs["Subsurface Weight"].default_value = 0.15
         bsdf.inputs["Subsurface Radius"].default_value = (0.004, 0.0015, 0.001)
@@ -1369,8 +1376,6 @@ def build_teeth(segs=10, rings=8):
                 root = np.array([g[0] * side, g[1], g[2]]) - np.array(grow_dir) * 0.0016
                 grow = np.array([0.10 * side if kind == "canine" else 0.03 * side, 0.0, grow_dir[2]])
                 V, F = tooth_mesh(root, grow, L, r, kind, side, segs, rings)
-                if side < 0:
-                    F = [tuple(reversed(f)) for f in F]
                 Vs.append(V)
                 Fs += [tuple(i + off for i in f) for f in F]
                 off += len(V)
@@ -2016,7 +2021,14 @@ def configure_render(q):
             continue
     scene.render.resolution_x, scene.render.resolution_y = q["res"]
     scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = "PNG"
+    fmt = scene.render.image_settings
+    if hasattr(fmt, "media_type"):      # Blender 5.x: video / multilayer EXR scenes refuse PNG otherwise
+        fmt.media_type = "IMAGE"
+    fmt.file_format = "PNG"
+    scene.render.use_border = False
+    scene.render.film_transparent = False
+    scene.render.use_simplify = False
+    scene.cycles.time_limit = 0
     try:
         scene.view_settings.view_transform = "AgX"
         for look in ("AgX - Medium High Contrast", "Medium High Contrast"):
@@ -2076,8 +2088,8 @@ def tail_hull_sdf(P):
     d = tail_sdf(P)
     t = np.clip((TAIL_POINTS[0, 2] - P[:, 2]) / (TAIL_POINTS[0, 2] - TAIL_POINTS[-1, 2]), 0, 1)
     fur = 0.036 + 0.032 * np.sin(np.pi * np.clip(t * 0.9 + 0.12, 0, 1)) ** 0.7
-    tuft = 0.85 + 0.15 * fbm(P, 40.0, 2, seed=41) + 0.25 * sstep(0.3, 0.9, value_noise(P, 80.0, seed=43))
-    return d - fur * tuft
+    tuft = 0.90 + 0.12 * fbm(P, 40.0, 2, seed=41)
+    return np.maximum(d - fur * tuft, (TAIL_HULL_BOX[0][1] + 0.006) - P[:, 1])  # closed cap inside the body
 
 
 def _voxel_remesh(obj, voxel):
@@ -2140,6 +2152,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
     set_color_attribute(hi.data, "fur_col", srgb_to_linear(hi_col))
     hi.data.materials.append(_bake_source_material())
     tail_hi_V, tail_hi_F = surface_nets(tail_hull_sdf, TAIL_HULL_BOX[0], TAIL_HULL_BOX[1], 0.0016)
+    tail_hi_V, tail_hi_F = _largest_component(tail_hi_V, tail_hi_F)
     tail_hi_V = taubin_smooth(tail_hi_V, tail_hi_F, iters=2)
     tail_hi = mesh_from_numpy("Bake_TailHull", tail_hi_V, tail_hi_F, src_col)
     set_color_attribute(tail_hi.data, "fur_col",
@@ -2167,6 +2180,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
     bpy.data.meshes.remove(body_tmp.data)
     add_part("Rbx_Body", bV, bT)
     tl_V, tl_F = surface_nets(tail_hull_sdf, TAIL_HULL_BOX[0], TAIL_HULL_BOX[1], 0.0040)
+    tl_V, tl_F = _largest_component(tl_V, tl_F)
     tl_V = taubin_smooth(tl_V, tl_F, iters=6)
     tail_tmp = mesh_from_numpy("tmp_tail", tl_V, tl_F, col)
     _voxel_remesh(tail_tmp, 0.0050)
@@ -2203,6 +2217,11 @@ def create_roblox_mesh(q, col, ears, M, rng):
         bpy.data.meshes.remove(o.data)
     fox = bpy.data.objects.new("Fox_Roblox", me)
     col.objects.link(fox)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.triangulate(bm, faces=bm.faces, quad_method="BEAUTY", ngon_method="BEAUTY")
+    bm.to_mesh(me)        # bake and export share the same triangles (consistent tangent space)
+    bm.free()
     me.polygons.foreach_set("use_smooth", np.ones(len(me.polygons), dtype=bool))
     if len(me.vertices) != len(rest_V):
         raise BuildError("Roblox mesh join changed the vertex count; cannot map skin weights")
@@ -2241,13 +2260,27 @@ def _bake_source_material():
 
 
 def uv_unwrap(obj):
+    """Smart UV Project on a smoothed copy of the shape (spiky tufts would split it into thousands
+    of islands), then pack the islands and restore the real shape."""
+    me = obj.data
+    co = np.empty(len(me.vertices) * 3, dtype=np.float32)
+    me.vertices.foreach_get("co", co)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    for _ in range(30):
+        bmesh.ops.smooth_vert(bm, verts=bm.verts, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+    bm.to_mesh(me)
+    bm.free()
     bpy.ops.object.select_all(action="DESELECT")
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=0.004)
+    bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=0.003)
+    bpy.ops.uv.pack_islands(rotate=True, margin=0.003, shape_method="CONCAVE")
     bpy.ops.object.mode_set(mode="OBJECT")
+    me.vertices.foreach_set("co", co)
+    me.update()
 
 
 def bake_maps(fox, sources, out_dir, size=ROBLOX_TEXTURE):
@@ -2278,14 +2311,17 @@ def bake_maps(fox, sources, out_dir, size=ROBLOX_TEXTURE):
     bake.use_selected_to_active = True
     bake.cage_extrusion = 0.006
     bake.max_ray_distance = 0.014
-    bake.margin = 6
+    bake.margin = 16
     for key, btype, kwargs in (("Color", "DIFFUSE", dict(pass_filter={"COLOR"})),
                                ("Normal", "NORMAL", {}),
                                ("Roughness", "ROUGHNESS", {})):
         nt.nodes.active = nodes[key]
         t0 = time.time()
-        bpy.ops.object.bake(type=btype, use_selected_to_active=True, cage_extrusion=0.006,
-                            max_ray_distance=0.014, margin=6, **kwargs)
+        bpy.ops.object.bake(type=btype, target="IMAGE_TEXTURES", save_mode="INTERNAL", use_clear=True,
+                            use_selected_to_active=True, use_cage=False, cage_extrusion=0.006,
+                            max_ray_distance=0.014, margin=16, margin_type="EXTEND",
+                            normal_space="TANGENT", normal_r="POS_X", normal_g="POS_Y", normal_b="POS_Z",
+                            **kwargs)
         path = os.path.join(out_dir, f"FoxRoblox_{key}.png")
         imgs[key].filepath_raw = path
         imgs[key].file_format = "PNG"
@@ -2443,8 +2479,6 @@ def export_roblox_asset(fox, rig, out_dir):
     fox.select_set(True)
     bpy.context.view_layer.objects.active = rig
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    tri = fox.modifiers.new("Triangulate", "TRIANGULATE")
-    tri.keep_custom_normals = True
     try:
         scene.unit_settings.scale_length = 0.01
         scene.unit_settings.length_unit = "CENTIMETERS"
@@ -2458,7 +2492,6 @@ def export_roblox_asset(fox, rig, out_dir):
     finally:
         scene.unit_settings.scale_length = old_scale
         scene.unit_settings.length_unit = old_len
-        fox.modifiers.remove(tri)
         rig.scale = (1.0 / s, 1.0 / s, 1.0 / s)
         bpy.context.view_layer.update()
         bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
@@ -2496,6 +2529,11 @@ def validate(report, objs):
 # =============================================================================
 
 def clear_scene():
+    own = os.path.basename(bpy.data.filepath) == "DesertFox.blend"
+    if (not bpy.app.background and (bpy.data.is_dirty or bpy.data.filepath) and not own
+            and not SETTINGS.get("replace_open_file", False)):
+        raise BuildError("desert_fox.py replaces everything in the open file. Start from File > New > General "
+                         "(or set SETTINGS['replace_open_file'] = True) and run it again.")
     if bpy.context.object and bpy.context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     for o in list(bpy.data.objects):
@@ -2509,7 +2547,15 @@ def clear_scene():
 
 
 def main(cfg=None):
-    cfg = cfg or _parse_args()
+    wm = bpy.context.window_manager
+    wm.progress_begin(0, 100)
+    try:
+        return _build(cfg or _parse_args(), wm.progress_update)
+    finally:
+        wm.progress_end()
+
+
+def _build(cfg, progress):
     q = QUALITY[cfg["quality"]]
     out_dir = cfg["out_dir"]
     os.makedirs(out_dir, exist_ok=True)
@@ -2528,6 +2574,7 @@ def main(cfg=None):
 
     place_features()
     M = create_materials()
+    progress(5)
 
     # 1) build everything in the rest pose (head level, jaw already open)
     body, body_V, body_F = create_body(q, anat_col, M)
@@ -2537,6 +2584,7 @@ def main(cfg=None):
     eyes = create_eyes(anat_col, M)
     mouth = create_teeth_and_tongue(anat_col, M)
     claws, pads = create_claws_and_pads(anat_col, M)
+    progress(25)
 
     root = bpy.data.objects.new("DesertFox_Root", None)
     root.empty_display_type = "PLAIN_AXES"
@@ -2549,6 +2597,7 @@ def main(cfg=None):
     fur = create_body_fur(q, body_V, body_F, fur_col, M, rng)
     tail_fur = create_tail_fur(q, tail_V, tail_F, fur_col, M, rng)
     ear_fur = create_ear_fur(q, ears, fur_col, M, rng)
+    progress(45)
     for f in fur:
         parent_keep(f, body)
     parent_keep(tail_fur, tail)
@@ -2566,6 +2615,7 @@ def main(cfg=None):
 
     # 2) pose: neck lowered, head lifted into a glare
     apply_head_pose(body, fur, head_objs)
+    progress(50)
     report["hq_triangles"] = {o.name: triangle_count(o) for o in [body, tail, nose, claws, pads] + mouth +
                               [e["obj"] for e in ears.values()]}
 
@@ -2574,10 +2624,12 @@ def main(cfg=None):
         rbx_col = get_collection("Fox_Roblox", root_col)
         fox, part_of_vertex, part_names, rest_V, sources = create_roblox_mesh(q, rbx_col, ears, M, rng)
         uv_unwrap(fox)
+        progress(70)
         rbx_dir = os.path.join(out_dir, "roblox")
         os.makedirs(rbx_dir, exist_ok=True)
         hq_parts = [e["obj"] for e in ears.values()] + [e["eye"] for e in eyes.values()] + [nose] + mouth
         bake_maps(fox, sources + hq_parts, rbx_dir)
+        progress(85)
         rig, bones = create_rig(rbx_col)
         skin_weights(fox, bones, part_of_vertex, part_names, rest_V)
         mod = fox.modifiers.new("Armature", "ARMATURE")
@@ -2589,6 +2641,7 @@ def main(cfg=None):
         report["roblox_triangles"] = triangle_count(fox)
         report["roblox_bones"] = len(bones)
         report["roblox_fbx"] = export_roblox_asset(fox, rig, rbx_dir)
+        progress(92)
         report["roblox_size_studs"] = [round(float(v), 2) for v in
                                        (np.array(fox.dimensions) * ROBLOX_STUDS_PER_METER * S)]
         rig.scale = (S, S, S)
@@ -2601,6 +2654,7 @@ def main(cfg=None):
     create_lighting_rig(studio_col, S)
     cams = create_camera_rig(cam_col, S)
     configure_render(q)
+    progress(96)
 
     blend_path = os.path.join(out_dir, "DesertFox.blend")
     bpy.ops.wm.save_as_mainfile(filepath=blend_path, check_existing=False, compress=True)
