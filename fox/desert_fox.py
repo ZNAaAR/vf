@@ -1176,27 +1176,29 @@ def create_fire_material():
 
 
 def create_fire(col, M, body_V, body_F, rng):
-    """HQ flames: nine tails, the mane and paw fire (rest pose; the mane is posed with the neck)."""
+    """HQ flames: nine tails, mane, burning coat, head crown and paw fire (rest pose)."""
     t0 = time.time()
     objs = {}
-    for name, V, F, g in build_fire_tails(rng) + build_fire_mane(body_V, body_F, rng) + build_paw_fire(rng):
+    parts = (build_fire_tails(rng) + build_fire_mane(body_V, body_F, rng) + build_fire_body(body_V, body_F, rng) +
+             build_fire_head(body_V, body_F, rng) + build_paw_fire(rng))
+    for name, V, F, g in parts:
         objs[name] = fire_object(f"Fire_{name}", V, F, g, col, M["fire"])
     log(f"fire: {len(objs)} flame groups ({time.time() - t0:.1f}s)")
     return objs
 
 
 PAL = {
-    # charcoal-grey "fire wolf" coat
-    "sand":      (0.46, 0.46, 0.47),
-    "golden":    (0.52, 0.51, 0.50),
-    "rust":      (0.34, 0.31, 0.32),
-    "cream":     (0.74, 0.73, 0.72),
-    "beige":     (0.60, 0.59, 0.58),
-    "grizzle":   (0.27, 0.27, 0.28),
-    "graybrown": (0.33, 0.32, 0.32),
-    "darkbrown": (0.12, 0.12, 0.13),
-    "charcoal":  (0.05, 0.05, 0.055),
-    "gum":       (0.40, 0.12, 0.14),
+    # a body made of fire: the old mask names now hold fire colours
+    "sand":      (0.72, 0.10, 0.28),    # base coat: magenta-red
+    "golden":    (0.88, 0.24, 0.18),    # legs / head base: red-orange
+    "rust":      (1.00, 0.46, 0.10),    # glowing ring around the eyes
+    "cream":     (1.00, 0.70, 0.24),    # cheeks, throat, lower jaw: hot amber
+    "beige":     (0.98, 0.42, 0.18),    # belly: orange
+    "grizzle":   (0.96, 0.24, 0.44),    # back saddle: hot pink
+    "graybrown": (0.52, 0.05, 0.18),    # chest, muzzle bridge: deep crimson
+    "darkbrown": (0.20, 0.03, 0.07),    # lower legs, face mask: dark ember
+    "charcoal":  (0.07, 0.02, 0.03),    # paws, lips: charred
+    "gum":       (0.42, 0.06, 0.08),
 }
 
 
@@ -1310,8 +1312,19 @@ def create_materials():
     # skin under the fur (coloured like the dense underfur so gaps never look bald)
     mat, nt, out = new_material("Fox_Skin")
     col = attribute(nt, "fur_col")
-    darker = mix_color(nt, 0.45, col, (0.0, 0.0, 0.0, 1.0), "MULTIPLY")
-    principled(nt, out, **{"Base Color": darker, "Roughness": 0.78})
+    darker = mix_color(nt, 0.75, col, (0.0, 0.0, 0.0, 1.0), "MULTIPLY")
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    cracks = nt.nodes.new("ShaderNodeTexVoronoi")
+    cracks.feature = "DISTANCE_TO_EDGE"
+    cracks.inputs["Scale"].default_value = 70.0
+    nt.links.new(tc.outputs["Object"], cracks.inputs["Vector"])
+    patches = nt.nodes.new("ShaderNodeTexNoise")
+    patches.inputs["Scale"].default_value = 35.0
+    nt.links.new(tc.outputs["Object"], patches.inputs["Vector"])
+    veins = map_range(nt, cracks.outputs["Distance"], 0.0, 0.018, 4.0, 0.0)    # thin glowing lava veins...
+    lava = math_op(nt, "MULTIPLY", veins, map_range(nt, patches.outputs["Fac"], 0.45, 0.62))  # ...in patches
+    principled(nt, out, **{"Base Color": darker, "Roughness": 0.6,
+                           "Emission Color": col, "Emission Strength": lava})
     M["skin"] = mat
 
     # fur strands: Principled Hair BSDF with per-strand base/tip colour and root darkening
@@ -1333,13 +1346,21 @@ def create_materials():
         set_input(hair, "Radial Roughness", radial)
         set_input(hair, "Coat", 0.08)
         set_input(hair, "Random Roughness", 0.15)
-        nt.links.new(hair.outputs[0], out.inputs["Surface"])
+        emit = nt.nodes.new("ShaderNodeEmission")
+        _set(nt, emit.inputs["Color"], gamma.outputs[0])
+        _set(nt, emit.inputs["Strength"], map_range(nt, info.outputs["Intercept"], 0.25, 1.0, 0.15,
+                                                     5.0 if key == "fur" else 1.5))
+        add = nt.nodes.new("ShaderNodeAddShader")
+        nt.links.new(hair.outputs[0], add.inputs[0])
+        nt.links.new(emit.outputs[0], add.inputs[1])
+        nt.links.new(add.outputs[0], out.inputs["Surface"])
         M[key] = mat
 
     # ears: vertex-coloured skin with light translucency
     mat, nt, out = new_material("Fox_Ear")
     col = attribute(nt, "ear_col")
-    bsdf = principled(nt, out, **{"Base Color": col, "Roughness": 0.88})
+    bsdf = principled(nt, out, **{"Base Color": col, "Roughness": 0.88, "Emission Color": col,
+                                  "Emission Strength": 1.6})
     set_input(bsdf, "Specular IOR Level", 0.12)        # matte ear skin (sheen/SSS made it look pale grey)
     M["ear"] = mat
 
@@ -1388,7 +1409,7 @@ def create_materials():
     iris = mix_color(nt, map_range(nt, rn, 0.58, 0.70), iris, lin((0.05, 0.028, 0.014)))   # limbal ring
     iris = mix_color(nt, pupil, iris, lin((0.004, 0.003, 0.003)))
     principled(nt, out, **{"Base Color": iris, "Roughness": 0.22,
-                           "Emission Color": iris, "Emission Strength": 7.0})   # fantasy glow
+                           "Emission Color": iris, "Emission Strength": 14.0})  # white-hot glow
     M["eye"] = mat
 
     # cornea: clear, wet, refractive
@@ -1548,16 +1569,80 @@ def build_ear_geometry(side, nu, nv, H=0.150, W=0.074, D=0.033, asym=0.0, notche
 
 def ear_colors(region, uv):
     u, v = uv[:, 0], np.abs(uv[:, 1])
-    inner = np.tile(np.asarray((0.30, 0.20, 0.15)), (len(u), 1))
-    inner = _mix(inner, PAL["darkbrown"], sstep(0.10, 0.60, u) * sstep(0.95, 0.4, v))
-    inner = _mix(inner, PAL["charcoal"], 0.85 * sstep(0.55, 0.90, u))
-    inner = _mix(inner, PAL["beige"], 0.45 * sstep(0.88, 0.98, v) * sstep(0.85, 0.5, u))
-    inner = _mix(inner, (0.24, 0.12, 0.11), 0.6 * sstep(0.18, 0.0, u))     # ear canal
+    inner = np.tile(np.asarray((0.25, 0.03, 0.08)), (len(u), 1))                  # dark ember hollow
+    inner = _mix(inner, (0.60, 0.05, 0.22), sstep(0.15, 0.6, u) * sstep(0.95, 0.5, v))
+    inner = _mix(inner, (1.00, 0.55, 0.15), 0.85 * sstep(0.84, 0.98, v))          # glowing rim
+    inner = _mix(inner, (1.00, 0.80, 0.30), 0.8 * sstep(0.82, 1.0, u))
     outer = np.tile(np.asarray(PAL["sand"]), (len(u), 1))
-    outer = _mix(outer, PAL["darkbrown"], sstep(0.25, 0.55, u))
-    outer = _mix(outer, PAL["charcoal"], sstep(0.55, 0.85, u))
-    outer = _mix(outer, PAL["charcoal"], 0.7 * sstep(0.85, 1.0, v) * sstep(0.2, 0.5, u))
+    outer = _mix(outer, PAL["grizzle"], sstep(0.25, 0.55, u))
+    outer = _mix(outer, (1.00, 0.50, 0.15), sstep(0.60, 0.85, u))                 # orange, then
+    outer = _mix(outer, (1.00, 0.85, 0.35), sstep(0.85, 1.0, u))                  # yellow-hot tips
     return np.where(region[:, None] < 0.5, inner, outer)
+
+
+def build_fire_body(body_V, body_F, rng, count=95, K=12, segs=10, min_dist=0.020, leg_count=40):
+    """Flames rising from the back, flanks, hips and legs: the coat itself burns."""
+    N = vertex_normals(body_V, body_F)
+    x, y, z = body_V[:, 0], body_V[:, 1], body_V[:, 2]
+    up = np.array([0, 0, 1.0])
+    segs_flow = flow_segments()
+    out = []
+    for name, cand, n_pick, Lr, Wr, md in (
+            ("FireBody", (y > -0.075) & (y < 0.215) & (z > 0.200) & (N[:, 2] > -0.25), count,
+             (0.06, 0.13), (0.030, 0.050), min_dist),
+            ("FireLegs", (z > 0.035) & (z < 0.175) & (np.abs(x) > 0.025) & (N[:, 2] > -0.5), leg_count,
+             (0.035, 0.07), (0.018, 0.030), min_dist * 0.8)):
+        idx = np.nonzero(cand)[0]
+        pick = idx[_spread_sample(body_V[idx], n_pick, md, rng)]
+        P, Nrm = body_V[pick], N[pick]
+        flow, _, _, _ = flow_at(P, segs_flow)
+        Vs, Fs, Gs, off = [], [], [], 0
+        for p, n, f in zip(P, Nrm, flow):
+            d0 = normalize(f * 0.5 + n * 0.55 + up * 0.85)          # fire rises
+            axis = np.cross(d0, n)
+            if np.linalg.norm(axis) < 1e-6:
+                axis = np.array([1.0, 0, 0])
+            path, a = lock_path(p - n * 0.003, d0, axis * (1 if rng.random() < 0.5 else -1),
+                                rng.uniform(*Lr), K, curl=rng.uniform(0.5, 1.0), flick=rng.uniform(-1.3, -0.6),
+                                wave=rng.uniform(-0.1, 0.1))
+            V, F, t = lock_mesh(path, a, rng.uniform(*Wr), rng.uniform(0.32, 0.42), segs)
+            Vs.append(V)
+            Fs += [tuple(i + off for i in face) for face in F]
+            Gs.append(np.clip(0.10 + 0.90 * t, 0, 1))
+            off += len(V)
+        out.append((name, np.concatenate(Vs), Fs, np.concatenate(Gs)))
+    return out
+
+
+def build_fire_head(body_V, body_F, rng, count=34, K=10, segs=8, min_dist=0.010):
+    """A crown of flames on the head and cheeks sweeping back (rest pose; posed with the head)."""
+    N = vertex_normals(body_V, body_F)
+    x, y, z = body_V[:, 0], body_V[:, 1], body_V[:, 2]
+    Pm = body_V.copy()
+    Pm[:, 0] = np.abs(Pm[:, 0])
+    away_eye = np.linalg.norm(Pm - ANAT["eye_center"], axis=1) > ANAT["eye_radius"] + 0.012
+    crown = (y < -0.235) & (y > -0.300) & (z > 0.405) & (N[:, 2] > 0.2)
+    cheek = (y < -0.245) & (y > -0.300) & (np.abs(x) > 0.030) & (z > 0.355) & (z < 0.392) & (np.abs(N[:, 0]) > 0.5)
+    idx = np.nonzero((crown | cheek) & away_eye)[0]
+    pick = idx[_spread_sample(body_V[idx], count, min_dist, rng)]
+    P, Nrm = body_V[pick], N[pick]
+    flow, _, _, _ = flow_at(P, flow_segments())
+    up = np.array([0, 0, 1.0])
+    Vs, Fs, Gs, off = [], [], [], 0
+    for p, n, f in zip(P, Nrm, flow):
+        d0 = normalize(f * 0.9 + n * 0.45 + up * 0.45)
+        axis = np.cross(d0, n)
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.array([1.0, 0, 0])
+        path, a = lock_path(p - n * 0.002, d0, axis * (1 if rng.random() < 0.5 else -1),
+                            rng.uniform(0.03, 0.065), K, curl=rng.uniform(0.5, 1.0), flick=rng.uniform(-1.3, -0.6),
+                            wave=rng.uniform(-0.08, 0.08))
+        V, F, t = lock_mesh(path, a, rng.uniform(0.014, 0.024), 0.4, segs)
+        Vs.append(V)
+        Fs += [tuple(i + off for i in face) for face in F]
+        Gs.append(np.clip(0.12 + 0.88 * t, 0, 1))
+        off += len(V)
+    return [("FireHead", np.concatenate(Vs), Fs, np.concatenate(Gs))]
 
 
 def create_ears(col, M, nu=44, nv=28):
@@ -2192,16 +2277,16 @@ def create_lighting_rig(col, S):
         col.objects.link(obj)
         return obj
 
-    area("Light_Key", (-1.20, -1.30, 1.30), 70.0, 0.55, (1.0, 0.90, 0.78))
+    area("Light_Key", (-1.20, -1.30, 1.30), 30.0, 0.55, (1.0, 0.90, 0.78))
     area("Light_Fill", (1.40, -1.10, 0.25), 6.0, 1.6, (0.62, 0.72, 1.0))
-    area("Light_Rim", (0.60, 1.15, 0.95), 105.0, 0.6, (1.0, 0.55, 0.22))
-    area("Light_Rim2", (-0.90, 0.95, 0.70), 60.0, 0.5, (1.0, 0.62, 0.30))
+    area("Light_Rim", (0.60, 1.15, 0.95), 45.0, 0.6, (1.0, 0.55, 0.22))
+    area("Light_Rim2", (-0.90, 0.95, 0.70), 25.0, 0.5, (1.0, 0.62, 0.30))
     world = bpy.data.worlds.get("Studio_World") or bpy.data.worlds.new("Studio_World")
     if bpy.app.version < (5, 0, 0) and not world.use_nodes:
         world.use_nodes = True
     bg = next(n for n in world.node_tree.nodes if n.type == "BACKGROUND")
     bg.inputs["Color"].default_value = lin((0.30, 0.26, 0.24))
-    bg.inputs["Strength"].default_value = 0.10
+    bg.inputs["Strength"].default_value = 0.05
     bpy.context.scene.world = world
 
 
@@ -2619,10 +2704,12 @@ def _distance_weights(obj, rig_bones, allowed, adjust=None):
 
 
 def create_roblox_flames(col, body_V, body_F, rng, out_dir):
-    """Low-poly flames (tails, mane, paws) as their own mesh with a fire-gradient texture.
+    """Low-poly flames (tails, mane, coat, head crown, paws) as their own mesh with a fire-gradient texture.
     In Roblox Studio this MeshPart can stay textured or be switched to Neon for a real glow."""
     parts = (build_fire_tails(rng, K=8, segs=6, sub_locks=9, sub_K=6, sub_segs=5) +
              build_fire_mane(body_V, body_F, rng, count=55, K=6, segs=5, min_dist=0.018) +
+             build_fire_body(body_V, body_F, rng, count=45, K=6, segs=5, min_dist=0.026, leg_count=20) +
+             build_fire_head(body_V, body_F, rng, count=16, K=5, segs=5, min_dist=0.013) +
              build_paw_fire(rng, per_paw=4, K=6, segs=5))
     Vs, Fs, Gs, ids, names, off = [], [], [], [], [], 0
     for i, (name, V, F, g) in enumerate(parts):
@@ -2649,7 +2736,6 @@ def create_roblox_flames(col, body_V, body_F, rng, out_dir):
     me.polygons.foreach_set("use_smooth", np.ones(len(me.polygons), dtype=bool))
     obj = bpy.data.objects.new("Fox_Flames", me)
     col.objects.link(obj)
-    # gradient texture
     w = 256
     img = bpy.data.images.new("FoxRoblox_Fire", w, 8, alpha=False)
     ramp = fire_color(np.linspace(0, 1, w))
@@ -2673,12 +2759,20 @@ def skin_flames(obj, rig_bones, part_of_vertex, part_names, rest_V):
     names = [b[0] for b in rig_bones]
     allowed = np.zeros((len(part_of_vertex), len(names)), dtype=bool)
     idx = {n: i for i, n in enumerate(names)}
+    trunk = ["Hips", "Spine1", "Spine2", "Chest", "Neck"]
+    legs = [n for n in names if "Leg" in n or "Foot" in n]
     for p, pname in enumerate(part_names):
         m = part_of_vertex == p
         if pname.startswith("FireTail"):
             ok = [f"{pname}_{b}" for b in (1, 2, 3)] + ["Hips"]
         elif pname == "FireMane":
             ok = ["Neck", "Chest", "Spine2", "Head"]
+        elif pname == "FireHead":
+            ok = ["Head"]
+        elif pname == "FireBody":
+            ok = trunk + [n for n in legs if "Upper" in n]
+        elif pname == "FireLegs":
+            ok = legs
         else:                                    # FirePaw.FL / FirePaw.BR ...
             tag = pname.split(".")[1]
             leg = "Front" if tag[0] == "F" else "Back"
@@ -2687,7 +2781,13 @@ def skin_flames(obj, rig_bones, part_of_vertex, part_names, rest_V):
             allowed[m, idx[n]] = True
 
     def adjust(w, ix):
-        w[:, ix["Head"]] *= 1.0 - sstep(ATLAS_PIVOT[1] + 0.03, ATLAS_PIVOT[1] + 0.06, rest_V[:, 1])
+        head_part = part_of_vertex == part_names.index("FireHead") if "FireHead" in part_names else False
+        fade = 1.0 - sstep(ATLAS_PIVOT[1] + 0.03, ATLAS_PIVOT[1] + 0.06, rest_V[:, 1])
+        w[:, ix["Head"]] *= np.where(head_part, 1.0, fade)
+        for n in names:                          # .L/.R bones never pull flames on the other side
+            sd = 1 if n.endswith(".L") else (-1 if n.endswith(".R") else 0)
+            if sd:
+                w[:, ix[n]] *= sstep(-0.015, 0.015, sd * rest_V[:, 0])
 
     _distance_weights(obj, rig_bones, allowed, adjust)
 
@@ -2950,7 +3050,7 @@ def _build(cfg, progress):
                       "tail": fire.get("FireTail5")})
 
     # 2) pose: neck lowered, head lifted into a glare (the fire mane follows the neck)
-    apply_head_pose(body, fur, head_objs, [fire["FireMane"]])
+    apply_head_pose(body, fur, head_objs, list(fire.values()))
     progress(50)
     S = CREATURE_SCALE = creature_scale_for_height([body] + [e["obj"] for e in ears.values()])
     report["creature_scale"] = round(S, 3)
