@@ -2512,13 +2512,13 @@ def skin_weights(fox, rig_bones, part_of_vertex, part_names, rest_V):
         sd = 1 if n.endswith(".L") else (-1 if n.endswith(".R") else 0)
         if sd:
             w[body, idx[n]] *= sstep(-0.015, 0.015, sd * rest_V[body, 0])
-    # the scalp around the ear roots follows the head, not the neck (ears must not slide off)
-    scalp = body & ~jaw & (rest_V[:, 2] > 0.33)
-    fade = sstep(ATLAS_PIVOT[1] + 0.014, ATLAS_PIVOT[1] + 0.034, rest_V[:, 1])
-    w[scalp, idx["Neck"]] *= fade[scalp]
+    # the skull (scalp around the ear roots, brow, muzzle) follows Head rigidly like the ears, eyes and nose;
+    # the mask is smooth in rest y and z so no hard weight seam appears
+    skull = (1.0 - sstep(ATLAS_PIVOT[1] + 0.020, ATLAS_PIVOT[1] + 0.055, rest_V[:, 1])) * sstep(0.30, 0.34, rest_V[:, 2])
+    skull[~body | jaw] = 0.0
     for n in body_bones:
-        if n not in ("Head", "Neck"):
-            w[scalp & (fade == 0), idx[n]] = 0.0
+        if n != "Head":
+            w[:, idx[n]] *= 1.0 - skull
     # nothing far down the neck follows the head
     w[body, idx["Head"]] *= 1.0 - sstep(ATLAS_PIVOT[1] + 0.03, ATLAS_PIVOT[1] + 0.06, rest_V[body, 1])
     order = np.argsort(-w, axis=1)[:, :4]
@@ -2600,10 +2600,23 @@ def validate(report, objs):
 # =============================================================================
 
 
-def clear_scene():
-    own = os.path.basename(bpy.data.filepath) == "DesertFox.blend"
-    if (not bpy.app.background and (bpy.data.is_dirty or bpy.data.filepath) and not own
-            and not SETTINGS.get("replace_open_file", False)):
+def _has_user_work():
+    """True when the open file holds something of the user's (opening this script alone does not count)."""
+    if bpy.data.filepath and os.path.basename(bpy.data.filepath) != "DesertFox.blend":
+        return True
+    if len(bpy.data.scenes) > 1:
+        return True
+    own = bpy.data.objects.get("DesertFox_Root") is not None
+    if not own and any(o.name not in {"Cube", "Camera", "Light"} for o in bpy.data.objects):
+        return True
+    for coll in (bpy.data.materials, bpy.data.images, bpy.data.node_groups, bpy.data.meshes):
+        if any(b.use_fake_user for b in coll):
+            return True
+    return False
+
+
+def clear_scene(cfg):
+    if not bpy.app.background and _has_user_work() and not cfg.get("replace_open_file", False):
         raise BuildError("desert_fox.py replaces everything in the open file. Start from File > New > General "
                          "(or set SETTINGS['replace_open_file'] = True) and run it again.")
     if bpy.context.object and bpy.context.object.mode != "OBJECT":
@@ -2635,7 +2648,7 @@ def _build(cfg, progress):
     t_start = time.time()
     rng = np.random.default_rng(SEED)
     log(f"Blender {bpy.app.version_string}, quality '{cfg['quality']}', output {out_dir}")
-    clear_scene()
+    clear_scene(cfg)
 
     root_col = get_collection("DesertFox")
     hq = get_collection("Fox_HQ", root_col)
