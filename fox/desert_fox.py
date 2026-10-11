@@ -363,19 +363,6 @@ def jaw_sdf_world_closed(P):
     return ssub(jaw_sdf(Pm), mouth_cavity_sdf(jaw_pose(Pm)), 0.003)
 
 
-TAIL_POINTS = np.array([
-    (0.000, 0.190, 0.264),
-    (0.000, 0.246, 0.255),
-    (0.003, 0.298, 0.232),
-    (0.008, 0.340, 0.197),
-    (0.012, 0.370, 0.155),
-    (0.015, 0.386, 0.116),
-])
-
-
-TAIL_RADII = [0.0230, 0.0212, 0.0190, 0.0155, 0.0115, 0.0060]
-
-
 FRONT_LEG = dict(shoulder=(0.052, -0.136, 0.218), elbow=(0.049, -0.104, 0.150),
                  wrist=(0.045, -0.119, 0.050), pastern=(0.045, -0.128, 0.022),
                  paw=(0.045, -0.139, 0.0130))
@@ -459,14 +446,6 @@ def body_sdf(P):
              0.0016)
     d = ssub(d, sd_sphere(Pm, E, R + 0.0003), 0.0008)
     d = d + 0.00045 * fbm(P, 60.0, 2, seed=3)
-    return d
-
-
-def tail_sdf(P):
-    d = None
-    for i in range(len(TAIL_POINTS) - 1):
-        seg = sd_round_cone(P, TAIL_POINTS[i], TAIL_POINTS[i + 1], TAIL_RADII[i], TAIL_RADII[i + 1])
-        d = seg if d is None else smin(d, seg, 0.004)
     return d
 
 
@@ -943,17 +922,269 @@ def lin(rgb):
 # =============================================================================
 
 
+FIRE_RAMP = [
+    # colour parameter g (0 = root, 1 = flame tip) -> sRGB
+    (0.00, (0.30, 0.30, 0.32)),     # grey fur at the roots
+    (0.07, (0.42, 0.28, 0.33)),
+    (0.16, (0.80, 0.15, 0.31)),     # deep pink
+    (0.45, (0.98, 0.37, 0.46)),     # hot pink
+    (0.74, (1.00, 0.60, 0.50)),     # coral
+    (0.91, (1.00, 0.84, 0.47)),     # yellow
+    (1.00, (1.00, 0.95, 0.66)),     # white-hot tips
+]
+
+
+FIRE_TAIL_COUNT = 9
+
+
+FIRE_TAIL_ROOT = np.array([0.0, 0.198, 0.268])
+
+
+def fire_color(g):
+    g = np.clip(np.asarray(g, dtype=np.float64), 0, 1)
+    xs = [s[0] for s in FIRE_RAMP]
+    return np.stack([np.interp(g, xs, [s[1][c] for s in FIRE_RAMP]) for c in range(3)], -1)
+
+
+def fire_glow(g):
+    g = np.clip(np.asarray(g, dtype=np.float64), 0, 1)
+    return 0.25 + 4.0 * sstep(0.08, 1.0, g) ** 1.3
+
+
+def rodrigues(v, axis, ang):
+    c, s = math.cos(ang), math.sin(ang)
+    return v * c + np.cross(axis, v) * s + axis * np.dot(axis, v) * (1 - c)
+
+
+def lock_path(start, d0, axis, L, K, curl, flick):
+    """Centre line of a flame lock: bends by `curl` (radians) early and flicks back by `flick` near the tip,
+    giving the S-shaped tongue of a stylised flame."""
+    d = np.asarray(d0, dtype=np.float64)
+    d = d / np.linalg.norm(d)
+    a = np.asarray(axis, dtype=np.float64)
+    a = a - np.dot(a, d) * d
+    a = a / max(np.linalg.norm(a), 1e-9)
+    pts = [np.asarray(start, dtype=np.float64)]
+    seg = L / (K - 1)
+    for k in range(1, K):
+        t = (k - 0.5) / (K - 1)
+        d = rodrigues(d, a, (curl * 2 * (1 - t) + flick * 3 * t * t) / (K - 1))
+        pts.append(pts[-1] + d * seg)
+    return np.array(pts), a
+
+
+def lock_mesh(path, axis, W, thick, segs):
+    """Flattened, tapering tube along `path` (wide across `axis`). Returns V, faces, t-per-vertex."""
+    K = len(path)
+    T = np.gradient(path, axis=0)
+    T = normalize(T)
+    B = normalize(axis[None, :] - np.einsum("ij,j->i", T, axis)[:, None] * T)
+    N = np.cross(B, T)
+    t = np.linspace(0, 1, K)
+    w = 0.5 * W * (1 - t) ** 0.8 * (0.65 + 1.4 * t * (1 - t))
+    phi = np.linspace(0, 2 * np.pi, segs, endpoint=False)
+    ring = (B[:, None, :] * np.cos(phi)[None, :, None] * w[:, None, None] +
+            N[:, None, :] * np.sin(phi)[None, :, None] * (w * thick)[:, None, None])
+    V = (path[:, None, :] + ring).reshape(-1, 3)
+    tip = path[-1] + T[-1] * w[0] * 0.15
+    base = path[0] - T[0] * w[0] * 0.25
+    V = np.concatenate([V, tip[None], base[None]])
+    tv = np.concatenate([np.repeat(t, segs), [1.0, 0.0]])
+    n_tip, n_base = K * segs, K * segs + 1
+    faces = []
+    for k in range(K - 1):
+        for j in range(segs):
+            a0, a1 = k * segs + j, k * segs + (j + 1) % segs
+            faces.append((a0, a1, a1 + segs, a0 + segs))
+    last = (K - 1) * segs
+    for j in range(segs):
+        faces.append((last + j, last + (j + 1) % segs, n_tip))
+        faces.append(((j + 1) % segs, j, n_base))
+    return V, faces, tv
+
+
+def fire_tail_paths(K=18):
+    """Centre lines of the nine fanned flame tails (deterministic, shared by HQ and Roblox builds)."""
+    key = f"fire_tail_paths_{K}"
+    if key in ANAT:
+        return ANAT[key]
+    rng = np.random.default_rng(SEED + 99)
+    up, back, side = np.array([0, 0, 1.0]), np.array([0, 1.0, 0]), np.array([1.0, 0, 0])
+    paths = []
+    for i in range(FIRE_TAIL_COUNT):
+        f = i / (FIRE_TAIL_COUNT - 1) * 2 - 1
+        d0 = normalize(back * 0.66 + up * (0.66 - 0.28 * abs(f)) + side * f * 0.82)
+        axis = np.cross(d0, up)
+        if np.linalg.norm(axis) < 1e-6:
+            axis = side.copy()
+        L = 0.56 + 0.12 * (1 - abs(f)) + rng.uniform(-0.03, 0.03)
+        path, a = lock_path(FIRE_TAIL_ROOT + side * f * 0.014, d0, axis, L, K,
+                            curl=0.55 + 0.25 * (1 - abs(f)) + rng.uniform(-0.08, 0.08),
+                            flick=-0.95 + rng.uniform(-0.15, 0.15))
+        paths.append((path, a))
+    ANAT[key] = paths
+    return paths
+
+
+def build_fire_tails(rng, K=18, segs=12, sub_locks=24, sub_K=14, sub_segs=10):
+    """Nine tails, each a big core flame wrapped in smaller flame locks that curl outward."""
+    parts = []
+    for i, (path, axis) in enumerate(fire_tail_paths(K)):
+        Vs, Fs, Gs, off = [], [], [], 0
+        V, F, t = lock_mesh(path, axis, 0.085, 0.62, segs)
+        Vs.append(V)
+        Fs += F
+        Gs.append(t)
+        off += len(V)
+        T = normalize(np.gradient(path, axis=0))
+        Bc = normalize(axis[None, :] - np.einsum("ij,j->i", T, axis)[:, None] * T)
+        Nc = np.cross(Bc, T)
+        tk = np.linspace(0, 1, len(path))
+        wk = 0.5 * 0.085 * (1 - tk) ** 0.8 * (0.65 + 1.4 * tk * (1 - tk))
+        for _ in range(sub_locks):
+            t0 = rng.uniform(0.06, 0.88)
+            k = int(round(t0 * (len(path) - 1)))
+            th = rng.uniform(0, 2 * np.pi)
+            rb, rn = wk[k], wk[k] * 0.62
+            root = path[k] + (Bc[k] * math.cos(th) * rb + Nc[k] * math.sin(th) * rn) * 0.8
+            radial = normalize(Bc[k] * math.cos(th) * rn + Nc[k] * math.sin(th) * rb)
+            d0 = normalize(T[k] * 1.0 + radial * 0.55)
+            sub_path, sub_axis = lock_path(root, d0, np.cross(d0, radial), rng.uniform(0.13, 0.24) * (1 - 0.45 * t0),
+                                           sub_K, curl=rng.uniform(0.5, 0.95), flick=rng.uniform(-1.3, -0.6))
+            V, F, t = lock_mesh(sub_path, sub_axis, rng.uniform(0.030, 0.046) * (1 - 0.4 * t0),
+                                rng.uniform(0.38, 0.5), sub_segs)
+            Vs.append(V)
+            Fs += [tuple(x + off for x in f) for f in F]
+            Gs.append(np.clip(t0 + (1 - t0) * 0.55 * t + 0.12 * t ** 3, 0, 1))
+            off += len(V)
+        parts.append((f"FireTail{i + 1}", np.concatenate(Vs), Fs, np.concatenate(Gs)))
+    return parts
+
+
+def _spread_sample(P, n, min_dist, rng):
+    order = rng.permutation(len(P))
+    chosen = []
+    cells = {}
+    for idx in order:
+        key = tuple((P[idx] // min_dist).astype(int))
+        ok = True
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for j in cells.get((key[0] + dx, key[1] + dy, key[2] + dz), ()):
+                        if np.linalg.norm(P[j] - P[idx]) < min_dist:
+                            ok = False
+                            break
+        if ok:
+            chosen.append(idx)
+            cells.setdefault(key, []).append(idx)
+            if len(chosen) >= n:
+                break
+    return np.array(chosen, dtype=np.int64)
+
+
+def build_fire_mane(body_V, body_F, rng, count=150, K=12, segs=10, min_dist=0.011):
+    """Flame locks bursting from the neck, shoulders and throat (rest pose)."""
+    N = vertex_normals(body_V, body_F)
+    x, y, z = body_V[:, 0], body_V[:, 1], body_V[:, 2]
+    cand = (y > -0.252) & (y < -0.055) & (z > 0.205) & (N[:, 2] > -0.35) & (np.abs(x) < 0.095)
+    cand |= (y > -0.245) & (y < -0.16) & (z > 0.18) & (z < 0.30) & (N[:, 1] < -0.2)     # throat ruff
+    idx = np.nonzero(cand)[0]
+    pick = idx[_spread_sample(body_V[idx], count, min_dist, rng)]
+    P, Nrm = body_V[pick], N[pick]
+    flow, _, _, _ = flow_at(P, flow_segments())
+    up = np.array([0, 0, 1.0])
+    Vs, Fs, Gs, off = [], [], [], 0
+    for p, n, f in zip(P, Nrm, flow):
+        d0 = normalize(f * 0.85 + n * 0.80 + up * 0.20)
+        axis = np.cross(d0, n) * (1 if rng.random() < 0.5 else -1)
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.array([1.0, 0, 0])
+        top = sstep(0.24, 0.32, p[2])
+        path, a = lock_path(p - n * 0.003, d0, axis, rng.uniform(0.075, 0.14) * (0.75 + 0.35 * top), K,
+                            curl=rng.uniform(0.35, 0.8), flick=rng.uniform(-1.2, -0.5))
+        V, F, t = lock_mesh(path, a, rng.uniform(0.018, 0.030), rng.uniform(0.38, 0.5), segs)
+        Vs.append(V)
+        Fs += [tuple(i + off for i in face) for face in F]
+        Gs.append(np.clip(0.03 + 0.97 * t, 0, 1))
+        off += len(V)
+    return [("FireMane", np.concatenate(Vs), Fs, np.concatenate(Gs))]
+
+
+def build_paw_fire(rng, per_paw=7, K=12, segs=10):
+    """Flames licking up around each paw."""
+    up = np.array([0, 0, 1.0])
+    parts = []
+    for joints, key, tag in ((FRONT_LEG, "front", "F"), (HIND_LEG, "hind", "B")):
+        for s, side in ((1, "L"), (-1, "R")):
+            c = np.array(_side(joints["paw"], s, STANCE[key][s]))
+            Vs, Fs, Gs, off = [], [], [], 0
+            for k in range(per_paw):
+                ang = 2 * np.pi * k / per_paw + rng.uniform(-0.3, 0.3)
+                o = np.array([math.cos(ang), math.sin(ang), 0.0])
+                root = c + o * rng.uniform(0.024, 0.042) * PAW_SCALE
+                root[2] = 0.002
+                d0 = normalize(up + o * 0.45)
+                path, a = lock_path(root, d0, np.cross(d0, o) * (1 if rng.random() < 0.5 else -1),
+                                    rng.uniform(0.05, 0.11), K, curl=rng.uniform(0.4, 0.8), flick=rng.uniform(-1.3, -0.6))
+                V, F, t = lock_mesh(path, a, rng.uniform(0.016, 0.026), 0.45, segs)
+                Vs.append(V)
+                Fs += [tuple(i + off for i in face) for face in F]
+                Gs.append(np.clip(0.18 + 0.82 * t, 0, 1))
+                off += len(V)
+            parts.append((f"FirePaw.{tag}{side}", np.concatenate(Vs), Fs, np.concatenate(Gs)))
+    return parts
+
+
+def fire_object(name, V, F, g, col, mat, subsurf=True):
+    me = bpy.data.meshes.new(name)
+    me.from_pydata([tuple(v) for v in V], [], [tuple(f) for f in F])
+    me.update()
+    set_color_attribute(me, "fire_col", srgb_to_linear(fire_color(g)))
+    glow = me.attributes.new("fire_glow", "FLOAT", "POINT")
+    glow.data.foreach_set("value", fire_glow(g).astype(np.float32))
+    me.polygons.foreach_set("use_smooth", np.ones(len(me.polygons), dtype=bool))
+    obj = bpy.data.objects.new(name, me)
+    col.objects.link(obj)
+    me.materials.append(mat)
+    if subsurf:
+        sub = obj.modifiers.new("Subdivision", "SUBSURF")
+        sub.levels = 1
+        sub.render_levels = 2
+    return obj
+
+
+def create_fire_material():
+    mat, nt, out = new_material("Fox_Fire")
+    col = attribute(nt, "fire_col")
+    glow = attribute(nt, "fire_glow", "Fac")
+    principled(nt, out, **{"Base Color": col, "Roughness": 0.38, "Coat Weight": 0.25,
+                           "Emission Color": col, "Emission Strength": glow})
+    return mat
+
+
+def create_fire(col, M, body_V, body_F, rng):
+    """HQ flames: nine tails, the mane and paw fire (rest pose; the mane is posed with the neck)."""
+    t0 = time.time()
+    objs = {}
+    for name, V, F, g in build_fire_tails(rng) + build_fire_mane(body_V, body_F, rng) + build_paw_fire(rng):
+        objs[name] = fire_object(f"Fire_{name}", V, F, g, col, M["fire"])
+    log(f"fire: {len(objs)} flame groups ({time.time() - t0:.1f}s)")
+    return objs
+
+
 PAL = {
-    "sand":      (0.62, 0.45, 0.27),
-    "golden":    (0.72, 0.47, 0.22),
-    "rust":      (0.62, 0.30, 0.11),
-    "cream":     (0.88, 0.81, 0.68),
-    "beige":     (0.74, 0.62, 0.44),
-    "grizzle":   (0.36, 0.30, 0.24),
-    "graybrown": (0.34, 0.27, 0.20),
-    "darkbrown": (0.14, 0.09, 0.055),
-    "charcoal":  (0.06, 0.05, 0.045),
-    "gum":       (0.40, 0.12, 0.12),
+    # charcoal-grey "fire wolf" coat
+    "sand":      (0.46, 0.46, 0.47),
+    "golden":    (0.52, 0.51, 0.50),
+    "rust":      (0.34, 0.31, 0.32),
+    "cream":     (0.74, 0.73, 0.72),
+    "beige":     (0.60, 0.59, 0.58),
+    "grizzle":   (0.27, 0.27, 0.28),
+    "graybrown": (0.33, 0.32, 0.32),
+    "darkbrown": (0.12, 0.12, 0.13),
+    "charcoal":  (0.05, 0.05, 0.055),
+    "gum":       (0.40, 0.12, 0.14),
 }
 
 
@@ -1047,20 +1278,6 @@ def body_color_at(P, N):
     gum_col = np.asarray(PAL["gum"]) * (0.75 + 0.25 * value_noise(P, 900.0, seed=13)[:, None] ** 2)
     col = col + (gum_col - col) * np.maximum(gum, retract)[:, None]
     return np.clip(col, 0, 1)
-
-
-def tail_color(P, N):
-    span = TAIL_POINTS[0, 2] - TAIL_POINTS[-1, 2]
-    t = np.clip((TAIL_POINTS[0, 2] - P[:, 2]) / span * 0.6 + (P[:, 1] - TAIL_POINTS[0, 1]) / 0.2 * 0.4, 0, 1)
-    col = np.tile(np.asarray(PAL["sand"]), (len(P), 1))
-    col = _mix(col, PAL["rust"], 0.45 * sstep(0.2, 0.7, t))
-    upper = sstep(-0.2, 0.6, N[:, 2] - N[:, 1] * 0.5)
-    col = _mix(col, PAL["grizzle"], 0.75 * upper * (1 - 0.5 * t))
-    col = _mix(col, PAL["charcoal"], 0.65 * np.exp(-((t - 0.10) / 0.06) ** 2) * upper)
-    col = _mix(col, PAL["beige"], 0.45 * sstep(0.0, -0.6, N[:, 2]))
-    col = _mix(col, PAL["charcoal"], 0.92 * sstep(0.78, 0.93, t))                       # black tail tip
-    v = 1.0 + 0.08 * fbm(P, 30.0, 3, seed=21)
-    return np.clip(col * v[:, None], 0, 1)
 
 
 EAR_NOTCHES = {
@@ -1232,25 +1449,6 @@ def _largest_component(V, F):
     remap = np.full(n, -1)
     remap[keep_v] = np.arange(int(keep_v.sum()))
     return V[keep_v], remap[F[keep_f]]
-
-
-TAIL_BOX = ((-0.035, 0.160, 0.085), (0.050, 0.420, 0.300))
-
-
-TAIL_HULL_BOX = ((-0.15, 0.120, 0.004), (0.16, 0.540, 0.400))
-
-
-def create_tail(q, col, M):
-    V, F = surface_nets(tail_sdf, TAIL_BOX[0], TAIL_BOX[1], q["voxel"])
-    V = taubin_smooth(V, F, iters=3)
-    obj = mesh_from_numpy("Fox_Tail", V, F, col)
-    N = vertex_normals(V, F)
-    set_color_attribute(obj.data, "fur_col", srgb_to_linear(tail_color(V, N)))
-    obj.data.materials.append(M["skin"])
-    sub = obj.modifiers.new("Subdivision", "SUBSURF")
-    sub.levels = 0
-    sub.render_levels = 1
-    return obj, V, F
 
 
 def create_nose(col, M, voxel=0.00032):
@@ -1852,37 +2050,6 @@ def area_of(V, F):
     return float(0.5 * np.linalg.norm(np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]]), axis=1).sum())
 
 
-def create_tail_fur(q, tail_V, tail_F, col, M, rng):
-    density = 1_300_000 * q["fur"]
-    P, Nrm, _ = sample_surface(tail_V, tail_F, int(area_of(tail_V, tail_F) * density), rng)
-    segs = [(TAIL_POINTS[i], TAIL_POINTS[i + 1]) for i in range(len(TAIL_POINTS) - 1)]
-    best_d = np.full(len(P), 1e9)
-    axis_dir = np.zeros_like(P)
-    t_par = np.zeros(len(P))
-    cum = np.cumsum([0] + [np.linalg.norm(b - a) for a, b in segs])
-    for i, (a, b) in enumerate(segs):
-        ba = b - a
-        t = np.clip(((P - a) @ ba) / (ba @ ba), 0, 1)
-        dd = np.linalg.norm(P - (a + np.outer(t, ba)), axis=1)
-        m = dd < best_d
-        best_d[m] = dd[m]
-        axis_dir[m] = ba / np.linalg.norm(ba)
-        t_par[m] = (cum[i] + t[m] * np.linalg.norm(ba)) / cum[-1]
-    L = 0.050 + 0.045 * np.sin(np.pi * np.clip(t_par * 0.9 + 0.12, 0, 1)) ** 0.7     # huge bristling brush
-    L *= rng.uniform(0.8, 1.25, len(L))
-    lift = 0.50 + 0.25 * t_par
-    L *= 1 - 0.35 * sstep(0.75, 1.0, t_par)
-    pts = grow_strands(P, Nrm, axis_dir, L, lift, rng, 9, frizz=0.11, gravity=0.25, bend=0.20)
-    pts = apply_clumping(pts, np.full(len(P), 0.50), rng, frac=0.02, power=1.3)
-    base = tail_color(P, Nrm)
-    base = _mix(base, PAL["charcoal"], 0.92 * sstep(0.70, 0.86, t_par))       # black brush tip
-    tip = _strand_colors(base, rng, 0.25 * (1 - t_par))
-    r = np.full(len(P), 0.00010)
-    obj = create_curves_object("Fur_Tail", pts, r, r * 0.15, base, tip, M["fur"], col)
-    log(f"  tail fur: {len(P):,} strands")
-    return obj
-
-
 def create_ear_fur(q, ears, col, M, rng):
     objs = []
     for tag, e in ears.items():
@@ -1938,13 +2105,13 @@ def creature_scale_for_height(objs):
     return TARGET_HEIGHT_STUDS / ROBLOX_STUDS_PER_METER / top
 
 
-def apply_head_pose(body, body_fur, head_objs):
+def apply_head_pose(body, body_fur, head_objs, extra_meshes=()):
     """Poses the rest-pose model: lowers the neck and lifts the head (glaring, stalking)."""
-    me = body.data
-    V = np.empty(len(me.vertices) * 3)
-    me.vertices.foreach_get("co", V)
-    me.vertices.foreach_set("co", pose_deform(V.reshape(-1, 3)).ravel().astype(np.float32))
-    me.update()
+    for me in [body.data] + [o.data for o in extra_meshes]:
+        V = np.empty(len(me.vertices) * 3)
+        me.vertices.foreach_get("co", V)
+        me.vertices.foreach_set("co", pose_deform(V.reshape(-1, 3)).ravel().astype(np.float32))
+        me.update()
     for f in body_fur:
         cv = f.data
         P = np.empty(len(cv.points) * 3, dtype=np.float32)
@@ -1962,15 +2129,15 @@ def apply_head_pose(body, body_fur, head_objs):
 # =============================================================================
 
 
-FOX_CENTER = Vector((0.0, -0.02, 0.23))
+FOX_CENTER = Vector((0.0, 0.03, 0.29))
 
 
 CAMERAS = {
     # name: (direction from target, distance, lens)   distances are for a 1x fox; scaled by CREATURE_SCALE
-    "front_3q":     ((-0.62, -1.00, 0.22), 2.25, 85),
-    "side":         ((-1.00, 0.02, 0.08), 2.55, 85),
-    "front":        ((0.00, -1.00, 0.10), 2.10, 85),
-    "rear_3q":      ((0.75, 1.00, 0.30), 2.35, 85),
+    "front_3q":     ((-0.62, -1.00, 0.20), 2.75, 85),
+    "side":         ((-1.00, 0.02, 0.06), 3.05, 85),
+    "front":        ((0.00, -1.00, 0.08), 2.55, 85),
+    "rear_3q":      ((0.75, 1.00, 0.25), 2.90, 85),
     "face_closeup": ((-0.32, -1.00, 0.02), 0.84, 105),
 }
 
@@ -2144,14 +2311,6 @@ def fur_hull_sdf_factory(segs, detail):
     return hull
 
 
-def tail_hull_sdf(P):
-    d = tail_sdf(P)
-    t = np.clip((TAIL_POINTS[0, 2] - P[:, 2]) / (TAIL_POINTS[0, 2] - TAIL_POINTS[-1, 2]), 0, 1)
-    fur = 0.036 + 0.032 * np.sin(np.pi * np.clip(t * 0.9 + 0.12, 0, 1)) ** 0.7
-    tuft = 0.90 + 0.12 * fbm(P, 40.0, 2, seed=41)
-    return np.maximum(d - fur * tuft, (TAIL_HULL_BOX[0][1] + 0.006) - P[:, 1])  # closed cap inside the body
-
-
 def _voxel_remesh(obj, voxel):
     mod = obj.modifiers.new("Remesh", "REMESH")
     mod.mode = "VOXEL"
@@ -2211,13 +2370,6 @@ def create_roblox_mesh(q, col, ears, M, rng):
     hi = mesh_from_numpy("Bake_FurHull", pose_points(hi_V), hi_F, src_col)
     set_color_attribute(hi.data, "fur_col", srgb_to_linear(hi_col))
     hi.data.materials.append(_bake_source_material())
-    tail_hi_V, tail_hi_F = surface_nets(tail_hull_sdf, TAIL_HULL_BOX[0], TAIL_HULL_BOX[1], 0.0016)
-    tail_hi_V, tail_hi_F = _largest_component(tail_hi_V, tail_hi_F)
-    tail_hi_V = taubin_smooth(tail_hi_V, tail_hi_F, iters=2)
-    tail_hi = mesh_from_numpy("Bake_TailHull", tail_hi_V, tail_hi_F, src_col)
-    set_color_attribute(tail_hi.data, "fur_col",
-                        srgb_to_linear(tail_color(tail_hi_V, vertex_normals(tail_hi_V, tail_hi_F))))
-    tail_hi.data.materials.append(_bake_source_material())
 
     # low-poly parts, each kept in rest space first (for jaw membership), then posed
     parts, rest_parts = [], []
@@ -2239,15 +2391,6 @@ def create_roblox_mesh(q, col, ears, M, rng):
     bV, bT = mesh_numpy(body_tmp)
     delete_object(body_tmp)
     add_part("Rbx_Body", bV, bT)
-    tl_V, tl_F = surface_nets(tail_hull_sdf, TAIL_HULL_BOX[0], TAIL_HULL_BOX[1], 0.0040)
-    tl_V, tl_F = _largest_component(tl_V, tl_F)
-    tl_V = taubin_smooth(tl_V, tl_F, iters=6)
-    tail_tmp = mesh_from_numpy("tmp_tail", tl_V, tl_F, col)
-    _voxel_remesh(tail_tmp, 0.0050)
-    _decimate(tail_tmp, 2400)
-    tV, tT = mesh_numpy(tail_tmp)
-    delete_object(tail_tmp)
-    add_part("Rbx_Tail", tV, tT)
     for tag, e in ears.items():
         V, F, region, uv = build_ear_geometry(e["side"], 14, 8, asym=0.0 if tag == "L" else -0.03,
                                               notches=EAR_NOTCHES[tag])
@@ -2286,7 +2429,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
     if len(me.vertices) != len(rest_V):
         raise BuildError("Roblox mesh join changed the vertex count; cannot map skin weights")
     log(f"roblox mesh: {triangle_count(fox):,} triangles ({time.time() - t0:.1f}s)")
-    return fox, part_of_vertex, part_names, rest_V, [hi, tail_hi]
+    return fox, part_of_vertex, part_names, rest_V, [hi]
 
 
 def _pad_faces(F):
@@ -2391,7 +2534,7 @@ def bake_maps(fox, sources, out_dir, size=ROBLOX_TEXTURE):
 
 
 def build_rig_definition():
-    """Bones placed on the posed fox (neck lowered, head lifted, jaw open)."""
+    """Bones placed on the posed beast (neck lowered, head lifted, jaw open) + 3 bones per fire tail."""
     H = np.array(head_matrix())
 
     def rigid(p):
@@ -2429,11 +2572,119 @@ def build_rig_definition():
         bones += [(f"BackUpperLeg.{tag}", Hl["hip"], Hl["stifle"], "Hips"),
                   (f"BackLowerLeg.{tag}", Hl["stifle"], Hl["hock"], f"BackUpperLeg.{tag}"),
                   (f"BackFoot.{tag}", Hl["hock"], toe, f"BackLowerLeg.{tag}")]
-    parent = "Hips"
-    for i in range(len(TAIL_POINTS) - 1):
-        bones.append((f"Tail{i + 1}", tuple(TAIL_POINTS[i]), tuple(TAIL_POINTS[i + 1]), parent))
-        parent = f"Tail{i + 1}"
+    for i, (path, _) in enumerate(fire_tail_paths(18)):
+        ks = [0, 6, 12, len(path) - 1]
+        parent = "Hips"
+        for b in range(3):
+            name = f"FireTail{i + 1}_{b + 1}"
+            bones.append((name, tuple(path[ks[b]]), tuple(path[ks[b + 1]]), parent))
+            parent = name
     return bones
+
+
+def _distance_weights(obj, rig_bones, allowed, adjust=None):
+    """Inverse-distance skin weights (max 4 influences) limited to the allowed bones."""
+    me = obj.data
+    V = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", V)
+    V = V.reshape(-1, 3)
+    names = [b[0] for b in rig_bones]
+    Hd = np.array([b[1] for b in rig_bones], dtype=np.float64)
+    Tl = np.array([b[2] for b in rig_bones], dtype=np.float64)
+    BA = Tl - Hd
+    l2 = np.einsum("ij,ij->i", BA, BA)
+    t = np.clip(np.einsum("nkj,kj->nk", V[:, None] - Hd[None], BA) / l2[None], 0, 1)
+    d = np.linalg.norm(V[:, None] - (Hd[None] + t[..., None] * BA[None]), axis=2)
+    w = np.where(allowed, 1.0 / np.maximum(d, 0.004) ** 4, 0.0)
+    if adjust is not None:
+        adjust(w, {n: i for i, n in enumerate(names)})
+    order = np.argsort(-w, axis=1)[:, :4]
+    top = np.take_along_axis(w, order, 1)
+    top /= np.maximum(top.sum(1, keepdims=True), 1e-12)
+    top[top < 0.02] = 0
+    top /= np.maximum(top.sum(1, keepdims=True), 1e-12)
+    groups = {n: (obj.vertex_groups.get(n) or obj.vertex_groups.new(name=n)) for n in names}
+    for vi in range(len(V)):
+        for j in range(4):
+            if top[vi, j] > 0:
+                groups[names[order[vi, j]]].add([vi], float(top[vi, j]), "REPLACE")
+    unweighted = int((top.sum(1) < 0.99).sum())
+    if unweighted:
+        raise BuildError(f"{unweighted} vertices of {obj.name} have no skin weight")
+
+
+def create_roblox_flames(col, body_V, body_F, rng, out_dir):
+    """Low-poly flames (tails, mane, paws) as their own mesh with a fire-gradient texture.
+    In Roblox Studio this MeshPart can stay textured or be switched to Neon for a real glow."""
+    parts = (build_fire_tails(rng, K=8, segs=6, sub_locks=9, sub_K=6, sub_segs=5) +
+             build_fire_mane(body_V, body_F, rng, count=55, K=6, segs=5, min_dist=0.018) +
+             build_paw_fire(rng, per_paw=4, K=6, segs=5))
+    Vs, Fs, Gs, ids, names, off = [], [], [], [], [], 0
+    for i, (name, V, F, g) in enumerate(parts):
+        Vs.append(V)
+        tris = []
+        for f in F:
+            for k in range(1, len(f) - 1):
+                tris.append((f[0] + off, f[k] + off, f[k + 1] + off))
+        Fs += tris
+        Gs.append(g)
+        ids.append(np.full(len(V), i))
+        names.append(name)
+        off += len(V)
+    rest_V = np.concatenate(Vs)
+    me = bpy.data.meshes.new("Fox_Flames")
+    me.from_pydata([tuple(v) for v in pose_deform(rest_V)], [], Fs)
+    me.update()
+    g = np.concatenate(Gs)
+    uv = me.uv_layers.new(name="UVMap")
+    loops_v = np.empty(len(me.loops), dtype=np.int64)
+    me.loops.foreach_get("vertex_index", loops_v)
+    uvs = np.stack([np.clip(g[loops_v], 0.004, 0.996), np.full(len(loops_v), 0.5)], 1)
+    uv.data.foreach_set("uv", uvs.ravel().astype(np.float32))
+    me.polygons.foreach_set("use_smooth", np.ones(len(me.polygons), dtype=bool))
+    obj = bpy.data.objects.new("Fox_Flames", me)
+    col.objects.link(obj)
+    # gradient texture
+    w = 256
+    img = bpy.data.images.new("FoxRoblox_Fire", w, 8, alpha=False)
+    ramp = fire_color(np.linspace(0, 1, w))
+    px = np.ones((8, w, 4), dtype=np.float32)
+    px[:, :, :3] = ramp[None, :, :]
+    img.pixels.foreach_set(px.ravel())
+    img.filepath_raw = os.path.join(out_dir, "FoxRoblox_Fire.png")
+    img.file_format = "PNG"
+    img.save()
+    mat, nt, out = new_material("Fox_Flames_Material")
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    principled(nt, out, **{"Base Color": tex.outputs["Color"], "Roughness": 0.4,
+                           "Emission Color": tex.outputs["Color"], "Emission Strength": 2.0})
+    me.materials.append(mat)
+    log(f"roblox flames: {triangle_count(obj):,} triangles")
+    return obj, np.concatenate(ids), names, rest_V
+
+
+def skin_flames(obj, rig_bones, part_of_vertex, part_names, rest_V):
+    names = [b[0] for b in rig_bones]
+    allowed = np.zeros((len(part_of_vertex), len(names)), dtype=bool)
+    idx = {n: i for i, n in enumerate(names)}
+    for p, pname in enumerate(part_names):
+        m = part_of_vertex == p
+        if pname.startswith("FireTail"):
+            ok = [f"{pname}_{b}" for b in (1, 2, 3)] + ["Hips"]
+        elif pname == "FireMane":
+            ok = ["Neck", "Chest", "Spine2", "Head"]
+        else:                                    # FirePaw.FL / FirePaw.BR ...
+            tag = pname.split(".")[1]
+            leg = "Front" if tag[0] == "F" else "Back"
+            ok = [f"{leg}Foot.{tag[1]}", f"{leg}LowerLeg.{tag[1]}"]
+        for n in ok:
+            allowed[m, idx[n]] = True
+
+    def adjust(w, ix):
+        w[:, ix["Head"]] *= 1.0 - sstep(ATLAS_PIVOT[1] + 0.03, ATLAS_PIVOT[1] + 0.06, rest_V[:, 1])
+
+    _distance_weights(obj, rig_bones, allowed, adjust)
 
 
 def create_rig(col, name="Fox_Rig"):
@@ -2475,7 +2726,7 @@ def skin_weights(fox, rig_bones, part_of_vertex, part_names, rest_V):
     d = np.linalg.norm(V[:, None] - (Hd[None] + t[..., None] * BA[None]), axis=2)
     allowed = np.zeros_like(d, dtype=bool)
     idx = {n: i for i, n in enumerate(names)}
-    body_bones = [n for n in names if not n.startswith(("Ear", "Tail", "Root", "Jaw"))]
+    body_bones = [n for n in names if not n.startswith(("Ear", "Fire", "Root", "Jaw"))]
     for p, pname in enumerate(part_names):
         m = part_of_vertex == p
         if pname.startswith("Rbx_Ear"):
@@ -2485,10 +2736,8 @@ def skin_weights(fox, rig_bones, part_of_vertex, part_names, rest_V):
             ok = ["Head"]
         elif pname.startswith(("Rbx_TeethLower", "Rbx_Tongue")):
             ok = ["Jaw"]
-        elif pname == "Rbx_Tail":
-            ok = ["Hips"] + [n for n in names if n.startswith("Tail")]
         else:
-            ok = body_bones + ["Tail1"]
+            ok = body_bones
         for n in ok:
             allowed[m, idx[n]] = True
     body = part_of_vertex == part_names.index("Rbx_Body")
@@ -2531,7 +2780,7 @@ def skin_weights(fox, rig_bones, part_of_vertex, part_names, rest_V):
         raise BuildError(f"{unweighted} Roblox vertices have no skin weight")
 
 
-def export_roblox_asset(fox, rig, out_dir):
+def export_roblox_asset(meshes, rig, out_dir):
     """FBX for Roblox Studio: 1 Blender unit = 1 stud (Roblox's documented Blender setup)."""
     scene = bpy.context.scene
     os.makedirs(out_dir, exist_ok=True)
@@ -2541,7 +2790,8 @@ def export_roblox_asset(fox, rig, out_dir):
     bpy.context.view_layer.update()
     bpy.ops.object.select_all(action="DESELECT")
     rig.select_set(True)
-    fox.select_set(True)
+    for m in meshes:
+        m.select_set(True)
     bpy.context.view_layer.objects.active = rig
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     try:
@@ -2648,22 +2898,24 @@ def _build(cfg, progress):
     root_col = get_collection("DesertFox")
     hq = get_collection("Fox_HQ", root_col)
     anat_col = get_collection("Fox_Anatomy", hq)
+    fire_col = get_collection("Fox_Fire", hq)
     fur_col = get_collection("Fox_Fur", hq)
     studio_col = get_collection("Studio", root_col)
     cam_col = get_collection("Cameras", root_col)
 
     place_features()
     M = create_materials()
+    M["fire"] = create_fire_material()
     progress(5)
 
     # 1) build everything in the rest pose (head level, jaw already open)
     body, body_V, body_F = create_body(q, anat_col, M)
-    tail, tail_V, tail_F = create_tail(q, anat_col, M)
     nose = create_nose(anat_col, M)
     ears = create_ears(anat_col, M)
     eyes = create_eyes(anat_col, M)
     mouth = create_teeth_and_tongue(anat_col, M)
     claws, pads = create_claws_and_pads(anat_col, M)
+    fire = create_fire(fire_col, M, body_V, body_F, np.random.default_rng(SEED + 7))
     progress(25)
 
     root = bpy.data.objects.new("DesertFox_Root", None)
@@ -2671,64 +2923,69 @@ def _build(cfg, progress):
     root.empty_display_size = 0.1
     hq.objects.link(root)
     head_objs = [nose] + [e["obj"] for e in ears.values()] + [p for e in eyes.values() for p in e.values()] + mouth
-    for o in [body, tail, claws, pads] + head_objs:
+    for o in [body, claws, pads] + head_objs + list(fire.values()):
         parent_keep(o, root)
 
     fur = create_body_fur(q, body_V, body_F, fur_col, M, rng)
-    tail_fur = create_tail_fur(q, tail_V, tail_F, fur_col, M, rng)
     ear_fur = create_ear_fur(q, ears, fur_col, M, rng)
     progress(45)
     for f in fur:
         parent_keep(f, body)
-    parent_keep(tail_fur, tail)
     for f in ear_fur:
         parent_keep(f, ears["L" if f.name.endswith(".L") else "R"]["obj"])
 
     report = {
         "blender": bpy.app.version_string,
         "quality": cfg["quality"],
-        "fur_strands": {o.name: len(o.data.curves) for o in fur + [tail_fur] + ear_fur},
+        "fur_strands": {o.name: len(o.data.curves) for o in fur + ear_fur},
     }
     report["fur_strands_total"] = sum(report["fur_strands"].values())
     validate(report, {"body": body, "ear_L": ears["L"]["obj"], "ear_R": ears["R"]["obj"],
-                      "eye_L": eyes["L"]["eye"], "eye_R": eyes["R"]["eye"], "nose": nose, "tail": tail})
+                      "eye_L": eyes["L"]["eye"], "eye_R": eyes["R"]["eye"], "nose": nose,
+                      "tail": fire.get("FireTail5")})
 
-    # 2) pose: neck lowered, head lifted into a glare
-    apply_head_pose(body, fur, head_objs)
+    # 2) pose: neck lowered, head lifted into a glare (the fire mane follows the neck)
+    apply_head_pose(body, fur, head_objs, [fire["FireMane"]])
     progress(50)
     S = CREATURE_SCALE = creature_scale_for_height([body] + [e["obj"] for e in ears.values()])
     report["creature_scale"] = round(S, 3)
     log(f"creature scale x{S:.2f} -> {TARGET_HEIGHT_STUDS} studs / {TARGET_HEIGHT_STUDS / ROBLOX_STUDS_PER_METER:.2f} m tall")
-    report["hq_triangles"] = {o.name: triangle_count(o) for o in [body, tail, nose, claws, pads] + mouth +
-                              [e["obj"] for e in ears.values()]}
+    report["hq_triangles"] = {o.name: triangle_count(o) for o in [body, nose, claws, pads] + mouth +
+                              [e["obj"] for e in ears.values()] + list(fire.values())}
 
     # 3) Roblox game asset
     if cfg["build_roblox"]:
         rbx_col = get_collection("Fox_Roblox", root_col)
-        fox, part_of_vertex, part_names, rest_V, sources = create_roblox_mesh(q, rbx_col, ears, M, rng)
-        uv_unwrap(fox)
-        progress(70)
         rbx_dir = os.path.join(out_dir, "roblox")
         os.makedirs(rbx_dir, exist_ok=True)
+        fox, part_of_vertex, part_names, rest_V, sources = create_roblox_mesh(q, rbx_col, ears, M, rng)
+        flames, f_parts, f_names, f_rest = create_roblox_flames(rbx_col, body_V, body_F,
+                                                                np.random.default_rng(SEED + 8), rbx_dir)
+        uv_unwrap(fox)
+        progress(70)
         hq_parts = [e["obj"] for e in ears.values()] + [e["eye"] for e in eyes.values()] + [nose] + mouth
         bake_maps(fox, sources + hq_parts, rbx_dir)
         progress(85)
         rig, bones = create_rig(rbx_col)
         skin_weights(fox, bones, part_of_vertex, part_names, rest_V)
-        mod = fox.modifiers.new("Armature", "ARMATURE")
-        mod.object = rig
-        fox.parent = rig
+        skin_flames(flames, bones, f_parts, f_names, f_rest)
+        for m in (fox, flames):
+            mod = m.modifiers.new("Armature", "ARMATURE")
+            mod.object = rig
+            m.parent = rig
         for s_obj in sources:
             s_obj.hide_render = True
             s_obj.hide_viewport = True
-        report["roblox_triangles"] = triangle_count(fox)
+        report["roblox_triangles"] = {"body": triangle_count(fox), "flames": triangle_count(flames)}
         report["roblox_bones"] = len(bones)
-        report["roblox_fbx"] = export_roblox_asset(fox, rig, rbx_dir)
+        report["roblox_fbx"] = export_roblox_asset([fox, flames], rig, rbx_dir)
         progress(92)
-        report["roblox_size_studs"] = [round(float(v), 2) for v in
-                                       (np.array(fox.dimensions) * ROBLOX_STUDS_PER_METER * S)]
+        bpy.context.view_layer.update()
+        pts = [fox.matrix_world @ Vector(c) for o in (fox,) for c in o.bound_box]
+        dims = np.ptp(np.array([p[:] for p in pts]), axis=0)
+        report["roblox_size_studs"] = [round(float(v), 2) for v in dims * ROBLOX_STUDS_PER_METER * S]
         rig.scale = (S, S, S)
-        rig.location.x = 1.0 * S       # stands next to the HQ fox in the .blend (hidden in renders)
+        rig.location.x = 1.2 * S       # stands next to the HQ beast in the .blend (hidden in renders)
         rbx_col.hide_render = True
 
     # 4) giant fantasy scale, studio, lights, cameras
