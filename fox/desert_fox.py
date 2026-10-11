@@ -272,6 +272,9 @@ NECK_DROP = math.radians(16.0)  # head carried low (stalking / threatening)
 HEAD_LIFT = math.radians(-13.0)  # ...but tilted up so the eyes glare forward
 
 
+HEAD_SCALE = 1.22               # werewolf-sized head for the hulking body (applied with the head pose)
+
+
 PAW_SCALE = 1.50                # huge werewolf paws
 
 
@@ -556,7 +559,7 @@ def head_pose_matrices():
         return m
     M1 = about(NECK_PIVOT, rot_x(NECK_DROP))
     atlas = (M1 @ np.append(ATLAS_PIVOT, 1.0))[:3]
-    M2 = about(atlas, rot_x(HEAD_LIFT))
+    M2 = about(atlas, rot_x(HEAD_LIFT) * HEAD_SCALE)
     return M1, M2, M2 @ M1
 
 
@@ -1108,15 +1111,7 @@ def create_materials():
     mat, nt, out = new_material("Fox_Ear")
     col = attribute(nt, "ear_col")
     bsdf = principled(nt, out, **{"Base Color": col, "Roughness": 0.88})
-    set_input(bsdf, "Specular IOR Level", 0.12)        # matte, velvety ear skin (no grazing sheen)
-    set_input(bsdf, "Sheen Weight", 0.35)
-    set_input(bsdf, "Sheen Roughness", 0.6)
-    try:
-        bsdf.inputs["Subsurface Weight"].default_value = 0.15
-        bsdf.inputs["Subsurface Radius"].default_value = (0.004, 0.0015, 0.001)
-        _set(nt, bsdf.inputs["Subsurface Scale"], 0.01)
-    except KeyError:
-        pass
+    set_input(bsdf, "Specular IOR Level", 0.12)        # matte ear skin (sheen/SSS made it look pale grey)
     M["ear"] = mat
 
     # nose: near-black, wet, pebbled rhinarium texture
@@ -1972,11 +1967,11 @@ FOX_CENTER = Vector((0.0, -0.02, 0.23))
 
 CAMERAS = {
     # name: (direction from target, distance, lens)   distances are for a 1x fox; scaled by CREATURE_SCALE
-    "front_3q":     ((-0.62, -1.00, 0.22), 2.55, 85),
-    "side":         ((-1.00, 0.02, 0.08), 2.75, 85),
-    "front":        ((0.00, -1.00, 0.10), 2.30, 85),
-    "rear_3q":      ((0.75, 1.00, 0.30), 2.60, 85),
-    "face_closeup": ((-0.32, -1.00, 0.02), 0.68, 105),
+    "front_3q":     ((-0.62, -1.00, 0.22), 2.25, 85),
+    "side":         ((-1.00, 0.02, 0.08), 2.55, 85),
+    "front":        ((0.00, -1.00, 0.10), 2.10, 85),
+    "rear_3q":      ((0.75, 1.00, 0.30), 2.35, 85),
+    "face_closeup": ((-0.32, -1.00, 0.02), 0.84, 105),
 }
 
 
