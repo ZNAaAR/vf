@@ -44,6 +44,7 @@ from mathutils import Matrix, Vector, kdtree
 # SETTINGS (used when you press "Run Script" inside Blender)
 # =============================================================================
 
+
 SETTINGS = {
     "quality": "medium",
     "render": False,          # True = render all presentation views (slow on CPU)
@@ -53,12 +54,14 @@ SETTINGS = {
     "replace_open_file": False,   # True = allow wiping the currently open (saved/edited) .blend
 }
 
+
 QUALITY = {
     #           SDF voxel   fur density  samples  resolution     curve shape
     "draft":  dict(voxel=0.0024, fur=0.22, samples=24, res=(960, 720), shape="RIBBONS"),
     "medium": dict(voxel=0.0017, fur=0.55, samples=64, res=(1600, 1200), shape="THICK"),
     "high":   dict(voxel=0.0013, fur=1.00, samples=128, res=(2048, 1536), shape="THICK"),
 }
+
 
 SEED = 20240611
 ROBLOX_STUDS_PER_METER = 3.57      # Roblox physics convention: 1 stud = 0.28 m
@@ -102,6 +105,7 @@ class BuildError(RuntimeError):
 # =============================================================================
 # NUMPY MATH HELPERS
 # =============================================================================
+
 
 def normalize(v):
     n = np.linalg.norm(v, axis=-1, keepdims=True)
@@ -169,6 +173,7 @@ def fbm(P, freq, octaves=3, seed=0, gain=0.5):
 # =============================================================================
 # SIGNED DISTANCE FIELD PRIMITIVES (numpy, vectorised over N points)
 # =============================================================================
+
 
 def sd_sphere(P, c, r):
     return np.linalg.norm(P - np.asarray(c), axis=1) - r
@@ -239,7 +244,9 @@ def ssub(a, b, k):
 # ANATOMY (all measurements in metres, fox faces -Y, ground is z = 0, left = +X)
 # =============================================================================
 
+
 ANAT = {}  # filled by place_features(): eye centres, nose, ear roots, mouth line...
+
 
 TARGET_HEIGHT_STUDS = 12.0      # finished boss height in Roblox, ground to ear tips (a player is ~5 studs)
 
@@ -475,6 +482,7 @@ def nose_sdf(P):
 
 # ---------- feature placement by ray-marching the SDF -------------------------
 
+
 def _surface_along(sdf, origin, direction, t_max=0.08, steps=60):
     """Find the first zero crossing of sdf from an inside point along direction (bisection)."""
     o = np.asarray(origin, dtype=np.float64)
@@ -528,6 +536,15 @@ def jaw_member(P):
     zline = np.interp(q[:, 1], [-0.352, -0.297, -0.270], [0.3592, 0.3626, 0.3640])
     zline_open = np.interp(Pm[:, 1], [-0.352, -0.297, -0.270], [0.3592, 0.3626, 0.3640])
     return (Pm[:, 1] < -0.268) & (q[:, 2] < zline + 0.0004) & (Pm[:, 2] < zline_open + 0.0004)
+
+
+def jaw_member_hull(P):
+    """Lower-jaw membership for the inflated game hull: split at the middle of the open mouth gap."""
+    Pm = P.copy()
+    Pm[:, 0] = np.abs(Pm[:, 0])
+    q = rot_about(Pm, JAW_HINGE, rot_x(-0.5 * JAW_OPEN))
+    zline = np.interp(q[:, 1], [-0.352, -0.297, -0.270], [0.3592, 0.3626, 0.3640])
+    return (Pm[:, 1] < -0.268) & (q[:, 2] < zline)
 
 
 def head_pose_matrices():
@@ -609,6 +626,7 @@ def place_features():
 # =============================================================================
 # SURFACE NETS MESHER (narrow-band sampling + dual contouring-lite)
 # =============================================================================
+
 
 def sample_grid(sdf, bmin, h, shape, block=16, chunk=1_200_000):
     nx, ny, nz = shape
@@ -745,6 +763,7 @@ def vertex_normals(V, F):
 # BLENDER HELPERS
 # =============================================================================
 
+
 def get_collection(name, parent=None):
     col = bpy.data.collections.get(name) or bpy.data.collections.new(name)
     parent = parent or bpy.context.scene.collection
@@ -803,6 +822,15 @@ def apply_modifiers(obj):
     bpy.data.meshes.remove(old)
 
 
+def delete_object(obj):
+    """Removes an object and, if nothing else uses it, its mesh (removing only the mesh leaves a
+    dangling object entry in the collection)."""
+    me = obj.data
+    bpy.data.objects.remove(obj, do_unlink=True)
+    if me is not None and me.users == 0:
+        bpy.data.meshes.remove(me)
+
+
 def parent_keep(child, parent):
     bpy.context.view_layer.update()   # matrix_world is stale until the depsgraph is evaluated
     child.parent = parent
@@ -815,6 +843,7 @@ def triangle_count(obj):
 
 
 # ---------- shader node helpers ----------------------------------------------
+
 
 def new_material(name):
     mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
@@ -909,6 +938,7 @@ def lin(rgb):
 # =============================================================================
 # FUR COLOUR MAP (shared by fur strands, skin, and the baked Roblox texture)
 # =============================================================================
+
 
 PAL = {
     "sand":      (0.62, 0.45, 0.27),
@@ -1041,6 +1071,7 @@ EAR_NOTCHES = {
 # MATERIALS
 # =============================================================================
 
+
 def create_materials():
     M = {}
 
@@ -1166,6 +1197,7 @@ def create_materials():
 # BODY, TAIL, NOSE
 # =============================================================================
 
+
 def create_body(q, col, M):
     t0 = time.time()
     h = q["voxel"]
@@ -1241,6 +1273,7 @@ def create_nose(col, M, voxel=0.00032):
 # =============================================================================
 # EARS
 # =============================================================================
+
 
 def ear_frame(side):
     d = ANAT["ear_dir"].copy()
@@ -1440,6 +1473,7 @@ def _tongue_object(col, M, us, vs, name="Fox_Tongue"):
 # EYES
 # =============================================================================
 
+
 def eye_matrix(side):
     E = ANAT["eye_center"] * np.array([side, 1, 1])
     g = ANAT["eye_gaze"] * np.array([side, 1, 1])
@@ -1540,6 +1574,7 @@ def _eyelid_mesh(name, R, side, n=72, m=10):
 # CLAWS AND PADS
 # =============================================================================
 
+
 def toe_tips():
     tips = []
     for s in (1, -1):
@@ -1598,6 +1633,7 @@ def create_claws_and_pads(col, M):
 # Hair flows along an anatomical "flow skeleton": each segment says which way hair grows
 # (a -> b), how long it is at each end, how much it stands up from the skin (lift) and
 # how strongly it clumps. Every root point blends the nearby segments (soft-min weights).
+
 
 def flow_segments():
     S = []
@@ -1930,6 +1966,7 @@ def apply_head_pose(body, body_fur, head_objs):
 # STUDIO, LIGHTS, CAMERAS, RENDER SETTINGS
 # =============================================================================
 
+
 FOX_CENTER = Vector((0.0, -0.02, 0.23))
 
 
@@ -2083,20 +2120,31 @@ def render_views(cams, out_dir, views=None):
 # ROBLOX ASSET: fur-silhouette mesh, baked maps, rig, FBX
 # =============================================================================
 
+
 def fur_hull_sdf_factory(segs, detail):
+    """Skin pushed out by the local fur length: the game mesh keeps the furry silhouette.
+    detail=1 adds fine grooves that run along the hair flow (baked into the normal map)."""
+    E, R = ANAT["eye_center"], ANAT["eye_radius"]
+
     def hull(P):
         d = body_sdf(P)
-        near = d < 0.05
+        near = d < 0.06
         out = d.copy()
         if near.any():
             Q = P[near]
-            _, L, _, clump = flow_at(Q, segs)
-            spikes = sstep(0.20, 0.85, value_noise(Q, 110.0, seed=7)) * clump * 1.4
-            tuft = 0.80 + 0.18 * fbm(Q, 45.0, 2, seed=31) + spikes + detail * 0.10 * value_noise(Q, 300.0, seed=8)
+            flow, L, _, clump = flow_at(Q, segs)
+            spikes = sstep(0.20, 0.85, value_noise(Q, 110.0, seed=7)) * sstep(0.45, 0.60, clump) * clump * 1.2
+            tuft = 0.85 + 0.12 * fbm(Q, 35.0, 2, seed=31) + spikes
             Pm = Q.copy()
             Pm[:, 0] = np.abs(Pm[:, 0])
-            bare = sstep(0.003, 0.007, mouth_cavity_sdf(Pm))       # keep the mouth open
-            out[near] = d[near] - L * 0.60 * tuft * bare
+            bare = sstep(0.003, 0.007, mouth_cavity_sdf(Pm))                        # keep the mouth open
+            bare *= sstep(R + 0.0010, R + 0.0065, np.linalg.norm(Pm - E, axis=1))   # and the eyes uncovered
+            offset = L * 0.60 * tuft * bare
+            if detail:
+                along = np.einsum("ij,ij->i", Q, flow)[:, None]
+                aniso = (Q - flow * along) * 900.0 + flow * along * 45.0           # stretched along the hair
+                offset = offset + 0.0007 * value_noise(aniso, 1.0, seed=17) * bare
+            out[near] = d[near] - offset
         return out
     return hull
 
@@ -2194,7 +2242,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
     _voxel_remesh(body_tmp, 0.0042)          # spiky tufts thinner than a voxel leave non-manifold edges
     _decimate(body_tmp, ROBLOX_BODY_TRIS)
     bV, bT = mesh_numpy(body_tmp)
-    bpy.data.meshes.remove(body_tmp.data)
+    delete_object(body_tmp)
     add_part("Rbx_Body", bV, bT)
     tl_V, tl_F = surface_nets(tail_hull_sdf, TAIL_HULL_BOX[0], TAIL_HULL_BOX[1], 0.0040)
     tl_V, tl_F = _largest_component(tl_V, tl_F)
@@ -2203,7 +2251,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
     _voxel_remesh(tail_tmp, 0.0050)
     _decimate(tail_tmp, 2400)
     tV, tT = mesh_numpy(tail_tmp)
-    bpy.data.meshes.remove(tail_tmp.data)
+    delete_object(tail_tmp)
     add_part("Rbx_Tail", tV, tT)
     for tag, e in ears.items():
         V, F, region, uv = build_ear_geometry(e["side"], 14, 8, asym=0.0 if tag == "L" else -0.03,
@@ -2223,7 +2271,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
         add_part(f"Rbx_Teeth{key.capitalize()}", V, _pad_faces(F), head_rigid=True)
     tongue = _tongue_object(col, M, 10, 6, name="tmp_tongue")
     tV, tT = mesh_numpy(tongue)
-    bpy.data.meshes.remove(tongue.data)
+    delete_object(tongue)
     add_part("Rbx_Tongue", tV, tT, head_rigid=True)
 
     part_of_vertex = np.concatenate([np.full(len(o.data.vertices), i) for i, o in enumerate(parts)])
@@ -2231,7 +2279,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
     part_names = [o.name for o in parts]
     me = _join(parts, "Fox_Roblox")
     for o in parts:
-        bpy.data.meshes.remove(o.data)
+        delete_object(o)
     fox = bpy.data.objects.new("Fox_Roblox", me)
     col.objects.link(fox)
     bm = bmesh.new()
@@ -2261,18 +2309,7 @@ def _bake_source_material():
     if mat:
         return mat
     mat, nt, out = new_material("Bake_FurColor")
-    col = attribute(nt, "fur_col")
-    tc = nt.nodes.new("ShaderNodeTexCoord")
-    # streaky fur relief for the normal bake
-    wave = nt.nodes.new("ShaderNodeTexNoise")
-    wave.inputs["Scale"].default_value = 900.0
-    wave.inputs["Detail"].default_value = 4.0
-    nt.links.new(tc.outputs["Object"], wave.inputs["Vector"])
-    bump = nt.nodes.new("ShaderNodeBump")
-    bump.inputs["Strength"].default_value = 0.6
-    bump.inputs["Distance"].default_value = 0.0006
-    nt.links.new(wave.outputs["Fac"], bump.inputs["Height"])
-    principled(nt, out, **{"Base Color": col, "Roughness": 0.85, "Normal": bump.outputs["Normal"]})
+    principled(nt, out, **{"Base Color": attribute(nt, "fur_col"), "Roughness": 0.85})
     return mat
 
 
@@ -2460,14 +2497,30 @@ def skin_weights(fox, rig_bones, part_of_vertex, part_names, rest_V):
         for n in ok:
             allowed[m, idx[n]] = True
     body = part_of_vertex == part_names.index("Rbx_Body")
-    jaw = body & jaw_member(rest_V)
+    jaw = body & jaw_member_hull(rest_V)
     allowed[jaw] = False
     allowed[jaw, idx["Jaw"]] = True
     head_region = body & (rest_V[:, 1] < -0.235) & (rest_V[:, 2] > 0.33) & ~jaw
     for n in body_bones:
         if n not in ("Head", "Neck"):
             allowed[head_region, idx[n]] = False
+    for n in ("Hips", "Spine1", "Spine2", "Chest"):
+        d[:, idx[n]] = np.maximum(d[:, idx[n]] - 0.035, 0.0)      # the trunk is thick: treat it as a capsule
     w = np.where(allowed, 1.0 / np.maximum(d, 0.004) ** 4, 0.0)
+    # .L/.R bones fade out across the midline (no leg pulling the other side or the belly)
+    for n in body_bones:
+        sd = 1 if n.endswith(".L") else (-1 if n.endswith(".R") else 0)
+        if sd:
+            w[body, idx[n]] *= sstep(-0.015, 0.015, sd * rest_V[body, 0])
+    # the scalp around the ear roots follows the head, not the neck (ears must not slide off)
+    scalp = body & ~jaw & (rest_V[:, 2] > 0.33)
+    fade = sstep(ATLAS_PIVOT[1] + 0.014, ATLAS_PIVOT[1] + 0.034, rest_V[:, 1])
+    w[scalp, idx["Neck"]] *= fade[scalp]
+    for n in body_bones:
+        if n not in ("Head", "Neck"):
+            w[scalp & (fade == 0), idx[n]] = 0.0
+    # nothing far down the neck follows the head
+    w[body, idx["Head"]] *= 1.0 - sstep(ATLAS_PIVOT[1] + 0.03, ATLAS_PIVOT[1] + 0.06, rest_V[body, 1])
     order = np.argsort(-w, axis=1)[:, :4]
     top = np.take_along_axis(w, order, 1)
     top /= np.maximum(top.sum(1, keepdims=True), 1e-12)
@@ -2519,6 +2572,7 @@ def export_roblox_asset(fox, rig, out_dir):
 # VALIDATION
 # =============================================================================
 
+
 def validate(report, objs):
     problems = []
     body = objs["body"]
@@ -2544,6 +2598,7 @@ def validate(report, objs):
 # =============================================================================
 # MAIN
 # =============================================================================
+
 
 def clear_scene():
     own = os.path.basename(bpy.data.filepath) == "DesertFox.blend"
