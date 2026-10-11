@@ -241,7 +241,10 @@ def ssub(a, b, k):
 
 ANAT = {}  # filled by place_features(): eye centres, nose, ear roots, mouth line...
 
-CREATURE_SCALE = 4.0            # fantasy boss: ~4x the size of a real fox (applied to the finished scene + export)
+TARGET_HEIGHT_STUDS = 12.0      # finished boss height in Roblox, ground to ear tips (a player is ~5 studs)
+
+
+CREATURE_SCALE = 4.0            # set at runtime from TARGET_HEIGHT_STUDS (the fox is modelled at real-fox size)
 
 
 JAW_OPEN = math.radians(22.0)   # snarling, open jaw
@@ -262,10 +265,10 @@ NECK_DROP = math.radians(16.0)  # head carried low (stalking / threatening)
 HEAD_LIFT = math.radians(-13.0)  # ...but tilted up so the eyes glare forward
 
 
-PAW_SCALE = 1.22                # oversized paws
+PAW_SCALE = 1.50                # huge werewolf paws
 
 
-LEG_THICK = 1.16                # heavier legs
+LEG_THICK = 1.45                # hulking legs
 
 
 TOE_OFFSETS = [(0.0052, -0.0165, -0.0020), (-0.0052, -0.0165, -0.0020),
@@ -295,17 +298,20 @@ def mouth_cavity_sdf(Pm):
 
 
 def torso_sdf(P):
-    """Torso and neck (P mirrored to x >= 0). Heavy, front-loaded build of a predator boss."""
-    d = sd_ellipsoid(P, (0, -0.075, 0.243), (0.058, 0.106, 0.068))                    # ribcage
-    d = smin(d, sd_ellipsoid(P, (0, -0.150, 0.226), (0.050, 0.050, 0.058)), 0.030)    # deep chest
-    d = smin(d, sd_round_cone(P, (0, 0.000, 0.250), (0, 0.105, 0.254), 0.043, 0.044), 0.040)  # loin
-    d = smin(d, sd_ellipsoid(P, (0, 0.135, 0.256), (0.053, 0.074, 0.054)), 0.030)     # pelvis / croup
-    d = smin(d, sd_round_cone(P, (0, -0.120, 0.279), (0, 0.170, 0.263), 0.032, 0.027), 0.030)  # back muscles
-    d = smin(d, sd_ellipsoid(P, (0, -0.118, 0.296), (0.034, 0.055, 0.024)), 0.020)    # muscular withers hump
-    d = smin(d, sd_ellipsoid(P, (0.040, -0.118, 0.248), (0.030, 0.048, 0.066), rot_x(-0.41)), 0.020)  # scapula
-    d = smin(d, sd_ellipsoid(P, (0.036, 0.146, 0.222), (0.030, 0.060, 0.068), rot_x(-0.56)), 0.024)  # haunch
-    d = smin(d, sd_round_cone(P, (0, -0.132, 0.272), (0, -0.228, 0.366), 0.055, 0.040), 0.035)  # thick neck
-    d = smin(d, sd_ellipsoid(P, (0, -0.203, 0.306), (0.037, 0.042, 0.036)), 0.020)    # throat
+    """Torso and neck (P mirrored to x >= 0): a hulking, front-heavy werewolf build on four legs."""
+    d = sd_ellipsoid(P, (0, -0.075, 0.248), (0.068, 0.112, 0.074))                    # barrel ribcage
+    d = smin(d, sd_ellipsoid(P, (0, -0.152, 0.226), (0.062, 0.058, 0.066)), 0.030)    # deep chest
+    d = smin(d, sd_ellipsoid(P, (0.031, -0.172, 0.214), (0.031, 0.030, 0.042), rot_x(0.3)), 0.018)  # pectorals
+    d = smin(d, sd_round_cone(P, (0, 0.000, 0.252), (0, 0.105, 0.256), 0.044, 0.046), 0.040)  # loin (waist)
+    d = smin(d, sd_ellipsoid(P, (0, 0.135, 0.258), (0.058, 0.076, 0.058)), 0.030)     # pelvis / croup
+    d = smin(d, sd_round_cone(P, (0, -0.125, 0.290), (0, 0.170, 0.266), 0.036, 0.029), 0.030)  # back muscles
+    d = smin(d, sd_ellipsoid(P, (0, -0.122, 0.306), (0.050, 0.074, 0.042)), 0.024)    # hunched trapezius hump
+    d = smin(d, sd_ellipsoid(P, (0.049, -0.120, 0.254), (0.040, 0.058, 0.076), rot_x(-0.41)), 0.022)  # massive scapula
+    d = smin(d, sd_ellipsoid(P, (0.060, -0.142, 0.214), (0.031, 0.036, 0.042), rot_x(0.2)), 0.016)   # deltoid
+    d = smin(d, sd_ellipsoid(P, (0.040, -0.040, 0.270), (0.030, 0.070, 0.050), rot_x(0.15)), 0.025)  # lats
+    d = smin(d, sd_ellipsoid(P, (0.040, 0.146, 0.224), (0.040, 0.068, 0.074), rot_x(-0.56)), 0.024)  # big haunch
+    d = smin(d, sd_round_cone(P, (0, -0.132, 0.278), (0, -0.228, 0.366), 0.068, 0.046), 0.035)  # bull neck
+    d = smin(d, sd_ellipsoid(P, (0, -0.203, 0.306), (0.045, 0.048, 0.042)), 0.020)    # throat
     return d
 
 
@@ -360,12 +366,16 @@ TAIL_POINTS = np.array([
 TAIL_RADII = [0.0230, 0.0212, 0.0190, 0.0155, 0.0115, 0.0060]
 
 
-FRONT_LEG = dict(shoulder=(0.044, -0.136, 0.218), elbow=(0.040, -0.104, 0.150),
-                 wrist=(0.036, -0.119, 0.046), pastern=(0.036, -0.128, 0.019),
-                 paw=(0.036, -0.137, 0.0105))
-HIND_LEG = dict(hip=(0.045, 0.128, 0.238), stifle=(0.049, 0.088, 0.148),
-                hock=(0.045, 0.166, 0.074), meta=(0.043, 0.151, 0.022),
-                paw=(0.043, 0.141, 0.0105))
+FRONT_LEG = dict(shoulder=(0.052, -0.136, 0.218), elbow=(0.049, -0.104, 0.150),
+                 wrist=(0.045, -0.119, 0.050), pastern=(0.045, -0.128, 0.022),
+                 paw=(0.045, -0.139, 0.0130))
+
+
+HIND_LEG = dict(hip=(0.050, 0.128, 0.238), stifle=(0.055, 0.088, 0.148),
+                hock=(0.051, 0.166, 0.076), meta=(0.049, 0.151, 0.025),
+                paw=(0.049, 0.141, 0.0130))
+
+
 STANCE = {"front": {1: -0.010, -1: 0.006}, "hind": {1: 0.008, -1: -0.006}}
 
 
@@ -1159,7 +1169,7 @@ def create_materials():
 def create_body(q, col, M):
     t0 = time.time()
     h = q["voxel"]
-    V, F = surface_nets(body_sdf, (-0.095, -0.395, -0.004), (0.095, 0.235, 0.462), h)
+    V, F = surface_nets(body_sdf, (-0.130, -0.395, -0.004), (0.130, 0.240, 0.462), h)
     V, F = _largest_component(V, F)
     V = taubin_smooth(V, F, iters=3)
     obj = mesh_from_numpy("Fox_Body", V, F, col)
@@ -1303,7 +1313,7 @@ def ear_colors(region, uv):
     inner = np.tile(np.asarray((0.30, 0.20, 0.15)), (len(u), 1))
     inner = _mix(inner, PAL["darkbrown"], sstep(0.10, 0.60, u) * sstep(0.95, 0.4, v))
     inner = _mix(inner, PAL["charcoal"], 0.85 * sstep(0.55, 0.90, u))
-    inner = _mix(inner, PAL["beige"], 0.65 * sstep(0.78, 0.96, v) * sstep(0.85, 0.5, u))
+    inner = _mix(inner, PAL["beige"], 0.45 * sstep(0.88, 0.98, v) * sstep(0.85, 0.5, u))
     inner = _mix(inner, (0.24, 0.12, 0.11), 0.6 * sstep(0.18, 0.0, u))     # ear canal
     outer = np.tile(np.asarray(PAL["sand"]), (len(u), 1))
     outer = _mix(outer, PAL["darkbrown"], sstep(0.25, 0.55, u))
@@ -1546,11 +1556,11 @@ def create_claws_and_pads(col, M):
     for tip, leg, s in toe_tips():
         n_before = len(bm.verts)
         mtx = Matrix.Translation(Vector(tip)) @ Matrix.Rotation(math.radians(-104), 4, "X")
-        bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.0027, radius2=0.00015,
-                              depth=0.0135, matrix=mtx)
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.0036, radius2=0.00018,
+                              depth=0.0185, matrix=mtx)
         for v in bm.verts[n_before:]:
             fwd = -(v.co.y - tip[1])
-            v.co.z -= 9.0 * max(fwd, 0) ** 2           # hooked, digging claws
+            v.co.z -= 7.0 * max(fwd, 0) ** 2           # hooked, digging claws
         for v in bm.verts[n_before:]:
             v.co.z = max(v.co.z, 0.0003)
     me = bpy.data.meshes.new("Fox_Claws")
@@ -1600,31 +1610,31 @@ def flow_segments():
     nose = (0, -0.364, 0.369)
     seg(nose, (0, -0.300, 0.392), 0.0022, 0.0050, 0.12)                          # muzzle top
     seg((0.010, -0.354, 0.362), (0.022, -0.295, 0.372), 0.0020, 0.0055, 0.12)     # muzzle side
-    seg((0, -0.300, 0.400), (0, -0.240, 0.428), 0.0050, 0.0140, 0.30, 0.20)       # forehead -> spiky crown
-    seg((0.020, -0.300, 0.392), (0.040, -0.250, 0.405), 0.0045, 0.0090, 0.22)     # over the brows
-    seg((0.022, -0.300, 0.372), (0.052, -0.236, 0.350), 0.0080, 0.0290, 0.40, 0.32)  # wild cheek ruff
-    seg((0, -0.340, 0.350), (0, -0.270, 0.334), 0.0025, 0.0080, 0.12)             # chin -> throat
-    seg((0.016, -0.300, 0.354), (0.035, -0.245, 0.330), 0.0040, 0.0140, 0.22, 0.15)  # jaw
-    seg((0, -0.235, 0.420), (0, -0.120, 0.312), 0.0220, 0.0440, 0.66, 0.52)       # bristling nape (hackles)
-    seg((0, -0.255, 0.330), (0, -0.170, 0.195), 0.0250, 0.0460, 0.52, 0.45)       # huge throat / chest mane
-    seg((0.040, -0.215, 0.350), (0.058, -0.150, 0.250), 0.0220, 0.0360, 0.46, 0.40)  # mane, side of neck
-    seg((0, -0.120, 0.312), (0, 0.195, 0.287), 0.0460, 0.0300, 0.72, 0.62)        # spiky dorsal crest
-    seg((0.050, -0.110, 0.270), (0.062, 0.120, 0.205), 0.0180, 0.0170, 0.24, 0.15)  # flank
-    seg((0.050, -0.070, 0.190), (0.040, 0.080, 0.175), 0.0140, 0.0150, 0.22)      # lower ribs
-    seg((0, -0.150, 0.168), (0, 0.130, 0.205), 0.0130, 0.0140, 0.25)              # belly
+    seg((0, -0.300, 0.400), (0, -0.240, 0.428), 0.0050, 0.0160, 0.32, 0.22)       # forehead -> spiky crown
+    seg((0.020, -0.300, 0.392), (0.040, -0.250, 0.405), 0.0045, 0.0100, 0.22)     # over the brows
+    seg((0.022, -0.300, 0.372), (0.056, -0.232, 0.346), 0.0090, 0.0360, 0.42, 0.34)  # wild cheek ruff
+    seg((0, -0.340, 0.350), (0, -0.270, 0.334), 0.0025, 0.0090, 0.12)             # chin -> throat
+    seg((0.016, -0.300, 0.354), (0.035, -0.245, 0.330), 0.0040, 0.0160, 0.22, 0.18)  # jaw
+    seg((0, -0.235, 0.420), (0, -0.120, 0.322), 0.0280, 0.0560, 0.66, 0.54)       # bristling nape (hackles)
+    seg((0, -0.255, 0.330), (0, -0.170, 0.195), 0.0320, 0.0620, 0.54, 0.48)       # huge throat / chest mane
+    seg((0.050, -0.215, 0.350), (0.072, -0.150, 0.250), 0.0300, 0.0500, 0.48, 0.44)  # mane, side of neck
+    seg((0, -0.120, 0.322), (0, 0.195, 0.292), 0.0560, 0.0340, 0.72, 0.62)        # spiky dorsal crest
+    seg((0.060, -0.110, 0.275), (0.074, 0.120, 0.210), 0.0240, 0.0220, 0.28, 0.22)  # shaggy flank
+    seg((0.060, -0.070, 0.190), (0.050, 0.080, 0.180), 0.0200, 0.0190, 0.26, 0.15)  # lower ribs
+    seg((0, -0.150, 0.168), (0, 0.130, 0.205), 0.0180, 0.0160, 0.28, 0.15)        # shaggy belly
     for key, joints in (("front", FRONT_LEG), ("hind", HIND_LEG)):
         for s in (1, -1):
             dy = STANCE[key][s]
             J = {k: _side(v, s, dy) for k, v in joints.items()}
             if key == "front":
-                chain = [(J["shoulder"], J["elbow"], 0.0170, 0.0120), (J["elbow"], J["wrist"], 0.0100, 0.0065),
-                         (J["wrist"], (J["paw"][0], J["paw"][1] - 0.02, 0.006), 0.0050, 0.0035)]
+                chain = [(J["shoulder"], J["elbow"], 0.0220, 0.0160), (J["elbow"], J["wrist"], 0.0130, 0.0080),
+                         (J["wrist"], (J["paw"][0], J["paw"][1] - 0.02, 0.006), 0.0060, 0.0040)]
             else:
-                chain = [(J["hip"], J["stifle"], 0.0200, 0.0140), (J["stifle"], J["hock"], 0.0115, 0.0080),
-                         (J["hock"], J["meta"], 0.0060, 0.0048),
-                         (J["meta"], (J["paw"][0], J["paw"][1] - 0.02, 0.006), 0.0045, 0.0035)]
+                chain = [(J["hip"], J["stifle"], 0.0240, 0.0170), (J["stifle"], J["hock"], 0.0130, 0.0090),
+                         (J["hock"], J["meta"], 0.0070, 0.0055),
+                         (J["meta"], (J["paw"][0], J["paw"][1] - 0.02, 0.006), 0.0050, 0.0040)]
             for a, b, la, lb in chain:
-                seg(a, b, la, lb, 0.18, 0.12, mirror=False)
+                seg(a, b, la, lb, 0.20, 0.16, mirror=False)
     return S
 
 
@@ -1857,13 +1867,13 @@ def create_ear_fur(q, ears, col, M, rng):
         P, Nrm, _ = sample_surface(V, front_f, int(9000 * q["fur"]) + 600, rng, Nrm_all)
         near = np.fromiter((tree.find(p)[1] for p in P), dtype=np.int64, count=len(P))
         u, v = uv[near, 0], uv[near, 1]
-        keep = (np.abs(v) > 0.62) & (u > 0.03) & (u < 0.80)
+        keep = (np.abs(v) > 0.84) & (u > 0.03) & (u < 0.80)
         P, Nrm, u, v = P[keep], Nrm[keep], u[keep], v[keep]
         inward = -np.sign(v)[:, None] * x[None] * e["side"]
         flow = normalize(inward * 0.7 + z[None] * 0.7 - back_dir[None] * 0.2)
-        L = (0.0085 - 0.0045 * u) * sstep(0.62, 0.95, np.abs(v)) * rng.uniform(0.7, 1.2, len(u)) + 0.0015
+        L = (0.0070 - 0.0035 * u) * sstep(0.84, 0.98, np.abs(v)) * rng.uniform(0.7, 1.2, len(u)) + 0.0012
         pts = grow_strands(P, Nrm, flow, L, np.full(len(u), 0.30), rng, 5, frizz=0.12, gravity=0.05, bend=0.25)
-        base = np.tile(np.asarray((0.80, 0.72, 0.60)), (len(u), 1))
+        base = np.tile(np.asarray((0.64, 0.53, 0.41)), (len(u), 1))
         r = np.full(len(u), 0.00005)
         objs.append(create_curves_object(f"Fur_Ear_Inner.{tag}", pts, r, r * 0.2, base, base, M["fur"], col))
         # 2) short dense fur on the back of the ear
@@ -1888,6 +1898,13 @@ def create_ear_fur(q, ears, col, M, rng):
         r = np.full(len(P), 0.00007)
         objs.append(create_curves_object(f"Fur_Ear_Tuft.{tag}", pts, r, r * 0.15, base, base, M["fur"], col))
     return objs
+
+
+def creature_scale_for_height(objs):
+    """Scale factor that makes the posed real-fox-size model TARGET_HEIGHT_STUDS tall in Roblox."""
+    bpy.context.view_layer.update()
+    top = max((o.matrix_world @ Vector(c)).z for o in objs for c in o.bound_box)
+    return TARGET_HEIGHT_STUDS / ROBLOX_STUDS_PER_METER / top
 
 
 def apply_head_pose(body, body_fur, head_objs):
@@ -2135,7 +2152,7 @@ def create_roblox_mesh(q, col, ears, M, rng):
     segs = flow_segments()
     src_col = get_collection("Roblox_BakeSources", col)
     H = np.array(head_matrix())
-    box = ((-0.12, -0.42, -0.004), (0.12, 0.25, 0.50))
+    box = ((-0.175, -0.43, -0.004), (0.175, 0.26, 0.54))
 
     def pose_points(V):
         return pose_deform(V)
@@ -2556,12 +2573,12 @@ def main(cfg=None):
 
 
 def _build(cfg, progress):
+    global CREATURE_SCALE
     q = QUALITY[cfg["quality"]]
     out_dir = cfg["out_dir"]
     os.makedirs(out_dir, exist_ok=True)
     t_start = time.time()
     rng = np.random.default_rng(SEED)
-    S = CREATURE_SCALE
     log(f"Blender {bpy.app.version_string}, quality '{cfg['quality']}', output {out_dir}")
     clear_scene()
 
@@ -2616,6 +2633,9 @@ def _build(cfg, progress):
     # 2) pose: neck lowered, head lifted into a glare
     apply_head_pose(body, fur, head_objs)
     progress(50)
+    S = CREATURE_SCALE = creature_scale_for_height([body] + [e["obj"] for e in ears.values()])
+    report["creature_scale"] = round(S, 3)
+    log(f"creature scale x{S:.2f} -> {TARGET_HEIGHT_STUDS} studs / {TARGET_HEIGHT_STUDS / ROBLOX_STUDS_PER_METER:.2f} m tall")
     report["hq_triangles"] = {o.name: triangle_count(o) for o in [body, tail, nose, claws, pads] + mouth +
                               [e["obj"] for e in ears.values()]}
 
