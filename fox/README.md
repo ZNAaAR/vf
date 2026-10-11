@@ -14,7 +14,25 @@ add-ons, no external files.
 | **HQ / cinematic** | one continuous sculpted body, ~130k–550k hair strands, sculpted flame tongues (tails, mane, paws) with glowing gradient fire, layered eyes, 32 teeth, tongue, claws | Blender renders, promo art, reference |
 | **Roblox** | body mesh (~12k tris, baked colour/normal/roughness) + separate flame mesh (~10k tris, fire-gradient texture) + 51-bone rig, one FBX | the game |
 
-<!-- RESULTS -->
+![Front three-quarter](renders/fox_front_3q.jpg)
+
+| | |
+| --- | --- |
+| ![Front](renders/fox_front.jpg) | ![Face close-up](renders/fox_face_closeup.jpg) |
+| ![Side](renders/fox_side.jpg) | ![Rear three-quarter](renders/fox_rear_3q.jpg) |
+
+Roblox game version (Blender preview of the exported meshes):
+
+| | |
+| --- | --- |
+| ![Roblox version](renders/roblox_preview_front_3q.jpg) | ![Roblox version, side](renders/roblox_preview_side.jpg) |
+
+**Final build (medium quality, Blender 5.2.2 LTS, 4-core CPU):** 313,099 fur strands,
+403,716-triangle body (render subdivision), 14 flame groups, creature scale ×6.38 →
+3.36 m / 12.0 studs tall. Roblox: body 13,302 tris + flames 9,984 tris, 51 bones,
+size 5.4 × 15.2 × 12.0 studs (w × l × h, body). Build + Roblox bake ≈ 10 min, each
+1600×1200 render ≈ 4–7 min on CPU.
+
 
 ## 1. Run the script
 
@@ -130,4 +148,20 @@ emission — the game version imitates them with geometry, baked textures and th
 
 ## 6. Quality checklist
 
-<!-- CHECKLIST -->
+Measured on the final build; the Roblox checks were done by re-importing the exported FBX.
+
+| Check | Result |
+| --- | --- |
+| Anatomy | Continuous SDF body; validation passed; all four paws flat on the ground (636 / 795 / 812 / 697 contact vertices) |
+| Fur coverage | 313,099 strands at medium (underfur + guard + ear fringes/tufts); no fur on eyes, nose, lips or inside the mouth |
+| Eyes | Separate eyeball (amber iris, radial fibres, limbal ring, slit pupil, glow), glass cornea (no shadow), eyelid rims, almond opening slanted 22° |
+| Ears | Thick cupped pinnae with forward-curling rims, torn notches (asymmetric), dark matte inner skin, pale rim fringe, black tip tufts |
+| Tails | Nine flame tails, fat cores + wide curling flame tongues; grey roots blending into pink → orange → yellow tips |
+| Mesh integrity | HQ body 1 non-manifold edge in 84k faces (draft); Roblox body voxel-remeshed (manifold) before decimation; right-side teeth winding verified |
+| UVs | Smart UV on a smoothed copy + packed islands (no thousand-island shatter); flames UV-mapped onto a gradient strip |
+| Materials | Principled Hair BSDF fur, emissive gradient fire, wet nose, refractive cornea, ivory teeth; Standard view transform keeps the fire saturated |
+| Polygon budget | Roblox body 13,302 tris, flames 9,984 tris (Roblox limit 20,000 per MeshPart) |
+| Rigging | 51 bones, no leaf bones; every vertex ≤ 4 influences, weights sum to 1.000; posing tests: Jaw moves only the jaw (both sides evenly), Ear.L only the left ear, each FireTail bone only flame vertices, FrontUpperLeg.L only its own side, Head moves skull + ears + eyes + teeth together |
+| Export orientation | −Z forward, +Y up, triangulated, textures embedded (Color, Normal, Roughness, Fire) |
+| Roblox import | Units: 1 Blender unit = 1 stud (unit scale 0.01, FBX Units Scale), so the model comes in ~12 studs tall. **Not test-imported in Roblox Studio** (not available here) — check the importer preview size and facing on first import |
+
