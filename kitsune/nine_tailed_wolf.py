@@ -1,14 +1,17 @@
 """
-NINE-TAILED FLAME WOLF - Roblox statue generator for Blender 5.2
+NINE-TAILED FLAME WOLF - Roblox model generator for Blender 5.2
 ================================================================
 
-Builds the "nine-tailed flame wolf" statue as a Roblox-ready model, all from code:
+Builds the nine-tailed flame fox (after a nine-tailed wolf statue) as a Roblox-ready model, all
+from code:
 
-  * a lean grey wolf crouched to pounce: head low and snarling (open jaw, teeth), ears pinned
-    back, shaggy neck ruff, carved fur relief (signed-distance-field sculpt -> surface-nets mesh)
-  * nine feathery tails fanned out behind it, grey at the root turning salmon pink, built from
-    layered locks whose lips catch the light
-  * a pink flame mane over the neck and shoulders, orange fire under the chest and a big flame
+  * a lean wolf-like fox crouched to pounce: head low and snarling (open jaw, teeth), big ears
+    pinned back, shaggy neck ruff, carved fur relief (signed-distance-field sculpt -> surface-nets mesh)
+  * fire-fox colours: orange coat with a red saddle, cream chest, black stockings and ear tips,
+    fur ridges burning yellow at the tips; big amber eyes with slit pupils (their own part)
+  * nine feathery tails fanned out behind it, red at the root through orange to yellow tips, built
+    from layered locks whose lips catch the light
+  * a flame mane over the neck and shoulders, orange fire under the chest and a big flame
     swirl beside the hind leg (sculpted flame tongues merged into one mass, like the statue)
   * no stand: the wolf stands on the ground plane (z = 0); the ground fire is its own part
   * Roblox export: one FBX with several MeshParts (each well under the 20,000-triangle limit),
@@ -37,7 +40,7 @@ import numpy as np
 # SETTINGS
 # =============================================================================
 
-STUDS_PER_UNIT = 12.0        # model units -> Roblox studs (wolf shoulder ~7 studs, statue ~17 studs tall)
+STUDS_PER_UNIT = 12.0        # model units -> Roblox studs (wolf shoulder ~7 studs, tails ~16 studs high)
 TEX = 1024                   # texture size (Roblox maximum)
 BODY_TRIS = 16000
 MANE_TRIS = 13000
@@ -242,9 +245,9 @@ def smax(a, b, k):
 # ANATOMY  (model units; wolf faces +X, its left side is +Y = camera side, ground z = 0)
 # =============================================================================
 
-HEAD_ORIGIN = np.array([0.585, 0.080, 0.445])
+HEAD_ORIGIN = np.array([0.600, 0.085, 0.455])
 HEAD_R = rot_z(math.radians(24)) @ rot_y(math.radians(20))     # turned towards the camera, nose down
-HEAD_S = 1.12                                                  # head scale (local units -> model units)
+HEAD_S = 1.22                                                  # head scale (local units -> model units)
 JAW_HINGE = np.array([-0.015, 0.0, -0.040])                    # head-local
 JAW_OPEN = math.radians(30)
 JAW_R = rot_y(JAW_OPEN)
@@ -264,6 +267,15 @@ LEGS = {
                    r=[0.096, 0.055, 0.036, 0.032], paw=(-0.408, -0.142), ground=0.0),
 }
 PAW_R = (0.070, 0.050, 0.036)
+
+
+NOSE_C = np.array([0.226, 0.0, 0.004])
+NOSE_R = 0.024
+EYE_SOCKET = np.array([0.080, 0.062, 0.032])     # head-local, left side (+Y)
+EYE_CENTER = np.array([0.077, 0.057, 0.032])
+EYE_RADIUS = 0.0195
+EYE_DIR = np.array([0.55, 0.80, 0.06])           # where the left eye looks (head-local)
+EAR_TIP = np.array([-0.130, 0.105, 0.195])
 
 
 def head_to_world(p):
@@ -295,25 +307,24 @@ def head_sdf(Ph):
     cran = sd_ellipsoid(Ph, (0.0, 0.0, 0.018), (0.120, 0.096, 0.086))
     d = cran
     for s in (1, -1):
-        d = smin(d, sd_ellipsoid(Ph, (0.072, 0.044 * s, 0.050), (0.040, 0.032, 0.024)), 0.03)       # brow
+        d = smin(d, sd_ellipsoid(Ph, (0.070, 0.044 * s, 0.054), (0.042, 0.034, 0.028)), 0.03)       # brow
         d = smin(d, sd_ellipsoid(Ph, (0.020, 0.080 * s, -0.014), (0.066, 0.044, 0.050)), 0.04)      # cheek
-    muzzle = sd_round_cone(Ph * np.array([1.0, 1.0, 1.10]), (0.050, 0.0, -0.004), (0.205, 0.0, -0.014), 0.064, 0.036)
+    muzzle = sd_round_cone(Ph * np.array([1.0, 0.95, 0.98]), (0.050, 0.0, -0.004), (0.195, 0.0, -0.012), 0.064, 0.033)
     d = smin(d, muzzle, 0.05)
     d = smin(d, sd_ellipsoid(Ph, (0.160, 0.0, 0.022), (0.075, 0.028, 0.015)), 0.03)                # snout ridge
-    d = smin(d, sd_sphere(Ph, (0.214, 0.0, -0.002), 0.026), 0.02)                                  # nose pad
+    d = smin(d, sd_sphere(Ph, NOSE_C, NOSE_R), 0.012)                                             # nose pad
     for k, x in enumerate((0.090, 0.112, 0.134)):                                                   # snarl wrinkles
         d = smin(d, sd_round_cone(Ph, (x, -0.038, 0.020 + 0.004 * k), (x + 0.012, 0.038, 0.020 + 0.004 * k), 0.0075, 0.0075), 0.012)
     Pj = head_to_jaw(Ph)
-    jaw = sd_round_cone(Pj * np.array([1.0, 1.12, 1.0]), (0.005, 0.0, -0.062), (0.185, 0.0, -0.070), 0.047, 0.026)
+    jaw = sd_round_cone(Pj * np.array([1.0, 1.15, 1.0]), (0.005, 0.0, -0.060), (0.178, 0.0, -0.064), 0.040, 0.020)
     d = smin(d, jaw, 0.035)
     d = smax(d, -mouth_cavity(Ph), 0.012)
     d = np.minimum(d, sd_ellipsoid(Pj, (0.095, 0.0, -0.058), (0.09, 0.026, 0.010)))                # tongue
     for s in (1, -1):
-        d = smax(d, -sd_sphere(Ph, (0.080, 0.060 * s, 0.031), 0.020), 0.008)                        # socket
-        d = np.minimum(d, sd_sphere(Ph, (0.077, 0.055 * s, 0.031), 0.0158))                          # eyeball
+        d = smax(d, -sd_sphere(Ph, EYE_SOCKET * np.array([1, s, 1]), 0.0225), 0.008)                # socket
         a = np.array([-0.030, 0.052 * s, 0.072])
-        b = np.array([-0.150, 0.092 * s, 0.135])
-        d = smin(d, sd_flat_cone(Ph, a, b, 0.044, 0.006, (0.15, 0.85 * s, -0.5), 0.34), 0.025)     # ear
+        b = EAR_TIP * np.array([1, s, 1])
+        d = smin(d, sd_flat_cone(Ph, a, b, 0.058, 0.006, (0.15, 0.85 * s, -0.45), 0.34), 0.025)    # ear
     return d
 
 
@@ -352,8 +363,37 @@ def ruff_center():
     return NECK_A + (neck_end() - NECK_A) * 0.70 + np.array([0.0, 0.0, -0.01])
 
 
+def _ruff_tufts():
+    """Big shaggy tufts round the neck and throat, swept back from the face."""
+    rng = np.random.default_rng(SEED + 5)
+    ne = neck_end()
+    axis = normalize(NECK_A - ne)                       # pointing back along the neck
+    side = np.array([0.0, 1.0, 0.0])
+    up = normalize(np.cross(axis, side))
+    if up[2] < 0:
+        up = -up
+    side = normalize(np.cross(up, axis))
+    tufts = []
+    for i in range(26):
+        t = rng.uniform(0.62, 0.98)
+        ang = rng.uniform(-math.pi, math.pi)
+        radial = up * math.cos(ang) + side * math.sin(ang)
+        root = NECK_A + (ne - NECK_A) * t + radial * 0.10
+        tip = root + normalize(axis * 1.0 + radial * 0.55 + rng.normal(0, 0.15, 3)) * rng.uniform(0.09, 0.15)
+        tufts.append((root, tip, rng.uniform(0.026, 0.036)))
+    return tufts
+
+
+RUFF_TUFTS = None
+
+
 def body_sdf(P, fur=True):
+    global RUFF_TUFTS
+    if RUFF_TUFTS is None:
+        RUFF_TUFTS = _ruff_tufts()
     d = torso_sdf(P)
+    for root, tip, r in RUFF_TUFTS:
+        d = smin(d, sd_round_cone(P, root, tip, r, 0.004), 0.025)
     ne = neck_end()
     d = smin(d, sd_round_cone(P, NECK_A, ne, 0.140, 0.105), 0.08)
     d = smin(d, sd_ellipsoid(P, ruff_center(), (0.125, 0.165, 0.165)), 0.06)                    # neck ruff
@@ -624,24 +664,24 @@ def tube_mesh(path, rx, ry, n_around, frame_roll=0.0, up_hint=(0, 0, 1), offset=
 
 # --- nine tails ---------------------------------------------------------------
 
-TAIL_RINGS, TAIL_AROUND = 60, 36
+TAIL_RINGS, TAIL_AROUND = 56, 42
 TAIL_TIERS = 5          # overlapping lock rows along each tail
-TAIL_CLUMPS = 6         # lock columns around each tail
+TAIL_CLUMPS = 7         # lock columns around each tail
 
 
 def tail_specs():
     """The nine tails fan out in the body's own plane, from 'up and over the back' to 'straight
     back', alternating left/right so the fan has depth."""
     rng = np.random.default_rng(SEED)
-    alphas = np.linspace(74, 168, 9) + rng.uniform(-4, 4, 9)
-    yaws = [22, -16, 12, -24, 6, -12, 20, -8, 15]
+    alphas = np.linspace(62, 176, 9) + rng.uniform(-4, 4, 9)
+    yaws = [34, -26, 18, -36, 8, -20, 30, -12, 24]
     specs = []
     for i, a in enumerate(alphas):
         mid = 1.0 - abs(a - 120) / 50.0
         specs.append(dict(alpha=math.radians(a), yaw=math.radians(yaws[i]),
-                          L=1.06 + 0.20 * mid + rng.uniform(-0.04, 0.04),
-                          R=0.140 + 0.022 * mid + rng.uniform(-0.008, 0.008),
-                          turn=math.radians(rng.uniform(50, 66)),
+                          L=0.90 + 0.16 * mid + rng.uniform(-0.04, 0.04),
+                          R=0.150 + 0.025 * mid + rng.uniform(-0.008, 0.008),
+                          turn=math.radians(rng.uniform(88, 108)),
                           twist=rng.uniform(0, 2 * math.pi)))
     return specs
 
@@ -650,7 +690,7 @@ def tail_path(spec, K):
     """Leaves the rump a little further back than its fan angle, then sweeps forward/up so the tip
     curls like a plume."""
     s = np.linspace(0, 1, K)
-    th = spec["alpha"] + math.radians(24) - spec["turn"] * s ** 1.25
+    th = spec["alpha"] + math.radians(30) - spec["turn"] * s ** 1.45
     step = spec["L"] / (K - 1)
     d = np.stack([np.cos(th), np.zeros(K), np.sin(th)], 1)
     p = np.cumsum(d * step, 0) - d[0] * step
@@ -666,10 +706,10 @@ def tail_lock_field(u, v):
     col = np.floor(u * TAIL_CLUMPS + 0.5)                 # lock column; boundaries sit in the grooves
     stagger = np.modf(np.sin(col * 12.9898 + 4.1) * 43758.5453)[0]
     stagger = np.abs(stagger)
-    wav = 0.12 * np.sin(th * 2 + 1.3)
-    x = v * TAIL_TIERS + stagger + wav
+    cl = 0.5 + 0.5 * np.cos(th * TAIL_CLUMPS)
+    x = v * TAIL_TIERS + stagger * 0.8 + 0.55 * (1.0 - cl)     # lock ends are V-shaped points
     phase = x - np.floor(x)
-    clump = (0.5 + 0.5 * np.cos(th * TAIL_CLUMPS)) ** 1.4
+    clump = cl ** 1.4
     return phase, clump
 
 
@@ -777,8 +817,8 @@ class FlameMass:
 
     def carve(self, P):
         """Swirling grooves along the flames."""
-        warp = fbm(P * 6.0, 2, self.seed + 3)
-        n = value_noise(P * np.array([30.0, 30.0, 11.0]) + warp[:, None] * 1.6, self.seed + 4)
+        warp = fbm(P * 5.0, 2, self.seed + 3)
+        n = value_noise(P * np.array([38.0, 38.0, 7.0]) + warp[:, None] * 1.0, self.seed + 4)
         return 1.0 - np.abs(n)
 
     def sdf(self, P):
@@ -812,21 +852,20 @@ class FlameMass:
         return s_best
 
 
-def _tongue(mass, p0, d0, L, W, rng, K=16, hook=1.0, rise=0.5, wave=0.5):
+def _tongue(mass, p0, d0, L, W, rng, K=16, hook=1.0, rise=0.5, wave=0.5, fat=0.85):
     path = curl_path(p0, d0, L, K, rng, hook, rise, wave)
     s = np.linspace(0, 1, K)
-    radii = W * (0.75 + 0.25 * sstep(0.0, 0.2, s)) * np.clip(1 - s, 0, 1) ** 0.85
+    radii = W * (0.75 + 0.25 * sstep(0.0, 0.2, s)) * np.clip(1 - s, 0, 1) ** fat
     mass.add_tongue(path, np.maximum(radii, 0.0035))
     return path
 
 
 def build_mane_mass():
-    """Pink flame mane: a swelling over the neck and shoulders with curling tongues combed back and
-    up, plus wisps licking forward past the cheeks."""
+    """Flame mane: a swelling over the neck and shoulders with wavy tongues combed back and up."""
     rng = np.random.default_rng(SEED + 1)
     m = FlameMass(k=0.035, groove=0.005, seed=11)
     ne = neck_end()
-    for t, r in ((0.15, (0.13, 0.12, 0.09)), (0.50, (0.13, 0.14, 0.10)), (0.85, (0.11, 0.14, 0.10))):
+    for t, r in ((-0.30, (0.13, 0.12, 0.08)), (0.05, (0.14, 0.14, 0.10)), (0.40, (0.12, 0.14, 0.10))):
         c = NECK_A + (ne - NECK_A) * t + np.array([-0.02, 0.0, 0.075 + 0.02 * (1 - t)])
         m.add_blob(c, r)
     axis_dir = normalize(ne - NECK_A)
@@ -834,47 +873,40 @@ def build_mane_mass():
     up = normalize(np.cross(side, axis_dir))
     if up[2] < 0:
         up = -up
-    for i in range(30):
-        t = rng.uniform(-0.15, 1.0)
+    for i in range(40):
+        t = rng.uniform(-0.45, 0.58)
         c = NECK_A + (ne - NECK_A) * t
         ang = rng.uniform(-1.7, 1.7)                       # around the neck, 0 = on top
         radial = up * math.cos(ang) + side * math.sin(ang)
         p0 = c + radial * (0.13 + 0.03 * math.cos(ang)) + np.array([0.0, 0.0, 0.05])
-        d0 = normalize(radial * 0.9 + np.array([-1.0, 0.0, 0.45]) + rng.normal(0, 0.18, 3))
-        L = rng.uniform(0.20, 0.36) * (0.75 + 0.35 * math.cos(ang * 0.8))
-        _tongue(m, p0, d0, L, rng.uniform(0.032, 0.050), rng, K=16, hook=rng.uniform(0.6, 1.2),
-                rise=0.35, wave=0.6)
-    for s in (1, -1):                                       # wisps past the cheeks
-        for k in range(2):
-            p0 = head_to_world((-0.03, 0.085 * s, 0.02 + 0.04 * k))
-            d0 = normalize(head_to_world((0.02, 0.10 * s, 0.26)) - head_to_world((0, 0, 0)))
-            _tongue(m, p0, d0, rng.uniform(0.15, 0.22), 0.030, rng, K=14, hook=0.9, rise=0.4, wave=0.5)
+        d0 = normalize(radial * 0.7 + np.array([-1.2, 0.0, 0.30]) + rng.normal(0, 0.18, 3))
+        L = rng.uniform(0.18, 0.32) * (0.75 + 0.35 * math.cos(ang * 0.8))
+        _tongue(m, p0, d0, L, rng.uniform(0.045, 0.065), rng, K=16, hook=rng.uniform(0.2, 0.45),
+                rise=0.35, wave=0.8, fat=0.55)
     return m
 
 
 def build_fire_mass():
-    """Orange fire: a bed of flames under the chest and between the front legs, and a tall swirl
+    """Orange fire: flames licking up under the chest and between the front legs, and a tall swirl
     rising beside the near hind leg up into the tails."""
     rng = np.random.default_rng(SEED + 2)
-    m = FlameMass(k=0.04, groove=0.006, seed=21, floor=0.0)
-    m.add_blob((0.34, 0.06, 0.0), (0.24, 0.17, 0.05))
-    m.add_blob((-0.56, 0.30, 0.0), (0.26, 0.15, 0.07))
-    m.add_blob((-0.60, 0.32, 0.20), (0.15, 0.10, 0.16))
-    for i in range(20):
-        x = rng.uniform(0.10, 0.60)
-        y = rng.uniform(-0.10, 0.26)
-        H = 0.18 + 0.20 * sstep(0.62, 0.25, x) + rng.uniform(-0.03, 0.06)
+    m = FlameMass(k=0.035, groove=0.006, seed=21, floor=0.0)
+    m.add_blob((0.36, 0.06, 0.0), (0.20, 0.12, 0.035))
+    m.add_blob((-0.58, 0.30, 0.0), (0.20, 0.11, 0.045))
+    for i in range(13):
+        x = rng.uniform(0.14, 0.58)
+        y = rng.uniform(-0.08, 0.22)
+        H = 0.20 + 0.22 * sstep(0.60, 0.25, x) + rng.uniform(-0.03, 0.06)
         d0 = normalize(np.array([rng.uniform(-0.4, 0.3), rng.uniform(-0.2, 0.4), 1.0]))
-        _tongue(m, (x, y, 0.02), d0, H, rng.uniform(0.035, 0.055), rng, K=16, hook=rng.uniform(0.5, 1.1),
-                rise=0.9, wave=0.7)
-    for i in range(22):
-        x = rng.uniform(-0.82, -0.30)
-        y = rng.uniform(0.18, 0.42)
-        H = 0.30 + 0.42 * sstep(-0.30, -0.66, x) + rng.uniform(-0.06, 0.08)
-        z0 = rng.uniform(0.0, 0.25)
+        _tongue(m, (x, y, 0.0), d0, H, rng.uniform(0.038, 0.055), rng, K=18, hook=rng.uniform(0.3, 0.8),
+                rise=0.7, wave=1.0, fat=0.6)
+    for i in range(15):
+        x = rng.uniform(-0.80, -0.36)
+        y = rng.uniform(0.20, 0.40)
+        H = 0.34 + 0.40 * sstep(-0.36, -0.68, x) + rng.uniform(-0.06, 0.08)
         d0 = normalize(np.array([-0.30 + rng.uniform(-0.3, 0.3), rng.uniform(-0.1, 0.4), 1.0]))
-        _tongue(m, (x, y, z0), d0, H * (1 - 0.5 * z0), rng.uniform(0.040, 0.065), rng, K=18,
-                hook=rng.uniform(0.6, 1.3), rise=0.8, wave=0.8)
+        _tongue(m, (x, y, 0.0), d0, H, rng.uniform(0.042, 0.062), rng, K=20,
+                hook=rng.uniform(0.35, 0.9), rise=0.6, wave=1.1, fat=0.6)
     return m
 
 
@@ -882,37 +914,48 @@ def build_fire_mass():
 # COLOURS
 # =============================================================================
 
-GREY = np.array([0.40, 0.40, 0.41])
+FUR_ORANGE = np.array([0.93, 0.40, 0.10])
+FUR_RED = np.array([0.70, 0.15, 0.05])
+FUR_CREAM = np.array([1.00, 0.80, 0.45])
+FUR_TIP = np.array([1.00, 0.74, 0.26])
+FUR_BLACK = np.array([0.10, 0.07, 0.06])
+
+
+def _mix(c, target, w):
+    return c * (1 - w[:, None]) + np.asarray(target) * w[:, None]
 
 
 def body_color(P, N):
+    """Fire fox coat: orange body, darker red saddle, cream chest and throat, black stockings and
+    ear tips; the carved fur ridges burn yellow at their tips."""
     rid = _fur_ridges(P, 3)
-    amp = fur_amplitude(P) / 0.03
-    c = np.tile(GREY, (len(P), 1))
-    up = np.clip(N[:, 2], -1, 1)
-    c = c * (0.92 + 0.10 * up[:, None])                                   # lighter on top planes
-    c = c * (0.80 + 0.40 * rid[:, None])                                  # carved fur ridges
-    dark_ruff = sstep(0.26, 0.10, np.linalg.norm(P - ruff_center(), axis=1))
-    c = c * (1 - 0.30 * dark_ruff[:, None] * (1 - 0.5 * rid[:, None]))
-    belly = sstep(0.42, 0.30, P[:, 2]) * sstep(0.30, 0.42, P[:, 2] + 0.0)
-    c = c + 0.05 * belly[:, None]
     Ph = world_to_head(P)
     Pj = head_to_jaw(Ph)
-    mouth = sstep(0.012, -0.004, mouth_cavity(Ph))
-    c = c * (1 - mouth[:, None]) + np.array([0.30, 0.09, 0.10]) * mouth[:, None]
-    tongue = sstep(0.006, -0.002, sd_ellipsoid(Pj, (0.095, 0.0, -0.058), (0.09, 0.026, 0.010)))
-    c = c * (1 - tongue[:, None]) + np.array([0.55, 0.22, 0.24]) * tongue[:, None]
-    nose = sstep(0.006, -0.002, sd_sphere(Ph, (0.214, 0.0, -0.002), 0.026))
-    c = c * (1 - nose[:, None]) + np.array([0.08, 0.08, 0.09]) * nose[:, None]
+    c = np.tile(FUR_ORANGE, (len(P), 1))
+    saddle = sstep(0.50, 0.66, P[:, 2]) * sstep(-0.1, 0.6, N[:, 2]) * sstep(0.30, 0.05, P[:, 0])
+    c = _mix(c, FUR_RED, 0.75 * saddle)
+    throat = sstep(0.05, 0.18, -N[:, 2] + 0.25 * N[:, 0]) * sstep(-0.10, 0.10, P[:, 0]) * sstep(0.56, 0.42, P[:, 2])
+    chest = sstep(0.17, 0.06, np.linalg.norm((P - np.array([0.33, 0.0, 0.40])) * np.array([1.0, 0.8, 0.7]), axis=1))
+    jaw_under = sstep(0.0, -0.035, Ph[:, 2]) * sstep(-0.06, 0.02, Ph[:, 0]) * sstep(0.10, 0.04, Ph[:, 0])
+    chin = sstep(0.0, 0.5, -(N @ HEAD_R)[:, 2]) * sstep(-0.04, -0.07, Pj[:, 2]) * sstep(0.02, 0.06, Pj[:, 0])
+    c = _mix(c, FUR_CREAM, np.clip(0.85 * throat + chest + jaw_under + 0.8 * chin, 0, 1))
+    stock = sstep(0.27, 0.15, P[:, 2])
+    c = _mix(c, FUR_BLACK, 0.92 * stock)
     for s in (1, -1):
-        eye = sstep(0.003, -0.002, sd_sphere(Ph, (0.077, 0.055 * s, 0.031), 0.0158))
-        c = c * (1 - eye[:, None]) + np.array([0.95, 0.62, 0.15]) * eye[:, None]
-        pupil = sstep(0.004, 0.0, np.linalg.norm((Ph - np.array([0.085, 0.068 * s, 0.031])) * np.array([1.0, 1.0, 0.45]), axis=1) - 0.0045)
-        c = c * (1 - pupil[:, None]) + np.array([0.05, 0.03, 0.02]) * pupil[:, None]
-    gz = 0.0
-    paws = sstep(0.07, 0.02, P[:, 2] - gz)
-    c = c * (1 - 0.25 * paws[:, None])
-    del amp
+        ear_tip = sstep(0.075, 0.03, np.linalg.norm(Ph - EAR_TIP * np.array([1, s, 1]), axis=1))
+        c = _mix(c, FUR_BLACK, 0.95 * ear_tip)
+        liner = sstep(0.034, 0.024, np.linalg.norm(Ph - EYE_SOCKET * np.array([1, s, 1]), axis=1))
+        c = _mix(c, FUR_BLACK, 0.85 * liner)
+    # burning fur tips on the ridges, darker in the grooves
+    glow = sstep(0.55, 0.95, rid) * (1 - 0.8 * stock)
+    c = _mix(c, FUR_TIP, 0.45 * glow)
+    c = c * (0.72 + 0.34 * rid[:, None])
+    mouth = sstep(0.012, -0.004, mouth_cavity(Ph))
+    c = _mix(c, np.array([0.32, 0.06, 0.06]), mouth)
+    tongue = sstep(0.006, -0.002, sd_ellipsoid(Pj, (0.095, 0.0, -0.058), (0.09, 0.026, 0.010)))
+    c = _mix(c, np.array([0.62, 0.20, 0.22]), tongue)
+    nose = sstep(0.012, 0.0, sd_sphere(Ph, NOSE_C, NOSE_R))
+    c = _mix(c, np.array([0.06, 0.05, 0.05]), nose)
     return np.clip(c, 0, 1)
 
 
@@ -933,24 +976,24 @@ def tail_textures(size):
     phase, clump = tail_lock_field(u, v)
     strands = _periodic_noise_u(u, v, 70.0, 3.0, 61)            # fine strands along the tail
     big = _periodic_noise_u(u, v, 9.0, 4.0, 62)
-    grey = np.array([0.42, 0.42, 0.44])
-    pink = np.array([0.93, 0.50, 0.55])
-    pale = np.array([0.98, 0.78, 0.76])
-    g = sstep(0.10, 0.45, v + 0.06 * big)
-    col = grey * (1 - g[..., None]) + pink * g[..., None]
-    t = sstep(0.55, 0.95, v + 0.25 * phase - 0.12)
-    col = col * (1 - t[..., None]) + pale * t[..., None]
-    lip = sstep(0.80, 0.97, phase) * sstep(0.18, 0.40, v)
-    col = col + (np.array([1.0, 0.93, 0.70]) - col) * (0.55 * lip)[..., None]        # warm lip highlight
+    root = np.array([0.80, 0.20, 0.06])          # matches the red saddle where the tails leave the body
+    mid = np.array([0.98, 0.43, 0.10])
+    tip = np.array([1.00, 0.86, 0.42])
+    g = sstep(0.05, 0.40, v + 0.06 * big)
+    col = root * (1 - g[..., None]) + mid * g[..., None]
+    t = sstep(0.50, 0.95, v + 0.25 * phase - 0.12)
+    col = col * (1 - t[..., None]) + tip * t[..., None]
+    lip = sstep(0.80, 0.97, phase) * sstep(0.12, 0.35, v)
+    col = col + (np.array([1.0, 0.95, 0.62]) - col) * (0.60 * lip)[..., None]        # burning lip of each lock
     under = sstep(0.12, 0.0, phase) * sstep(0.12, 0.3, v)
-    col = col * (1 - 0.30 * under[..., None])                                        # shadow under each lock
+    col = col * (1 - 0.35 * under[..., None])                                        # shadow under each lock
     col = col * (0.86 + 0.20 * (0.5 + 0.5 * strands))[..., None]
     col = np.clip(col, 0, 1)
     h = 0.6 * strands + 0.4 * phase ** 2
     return col, height_to_normal(h, 0.9 / size, 3.5)
 
 
-PINK_FIRE = [(0.0, (0.84, 0.30, 0.43)), (0.35, (0.95, 0.47, 0.54)), (0.75, (0.99, 0.68, 0.67)), (1.0, (1.0, 0.86, 0.74))]
+MANE_FIRE = [(0.0, (0.95, 0.32, 0.08)), (0.35, (1.0, 0.55, 0.12)), (0.75, (1.0, 0.78, 0.28)), (1.0, (1.0, 0.95, 0.66))]
 ORANGE_FIRE = [(0.0, (0.84, 0.14, 0.05)), (0.30, (0.98, 0.34, 0.09)), (0.70, (1.0, 0.58, 0.16)), (1.0, (1.0, 0.86, 0.40))]
 
 
@@ -960,10 +1003,10 @@ def flame_color(mass, P, palette, highlight):
     stops, cols = zip(*palette)
     t = np.clip(s * 0.95 + 0.18 * (carve - 0.5), 0, 1)
     col = np.stack([np.interp(t, stops, [c[k] for c in cols]) for k in range(3)], -1)
-    ridge = sstep(0.72, 0.95, carve)                       # raised swirls catch the light
-    col = col + (np.asarray(highlight) - col) * (0.6 * ridge)[:, None]
-    groove = sstep(0.35, 0.05, carve)
-    col = col * (1 - 0.22 * groove)[:, None]
+    ridge = sstep(0.84, 0.98, carve)                       # raised streaks catch the light
+    col = col + (np.asarray(highlight) - col) * (0.38 * ridge)[:, None]
+    groove = sstep(0.30, 0.03, carve)
+    col = col * (1 - 0.16 * groove)[:, None]
     return np.clip(col, 0, 1)
 
 
@@ -1141,9 +1184,10 @@ def build_teeth_claws():
     upper = [(V, F) for V, F in parts]
     lower = []
     for s in (1, -1):
-        lower.append(tooth(np.array([0.150, 0.026 * s, -0.046]), (0.10, 0.10 * s, 1.0), 0.040, 0.0095))
-        for x in (0.115, 0.088):
-            lower.append(tooth(np.array([x, 0.033 * s, -0.048]), (0.0, 0.0, 1.0), 0.016, 0.0065))
+        # angled back towards the hinge so they point up at the upper jaw while the mouth is open
+        lower.append(tooth(np.array([0.150, 0.022 * s, -0.055]), (-0.45, 0.06 * s, 1.0), 0.038, 0.0090))
+        for x in (0.118, 0.090):
+            lower.append(tooth(np.array([x, 0.027 * s, -0.054]), (-0.35, 0.0, 1.0), 0.018, 0.0060))
     Vs, Fs, off = [], [], 0
     for V, F in upper:
         Vs.append(head_to_world(V))
@@ -1166,6 +1210,59 @@ def build_teeth_claws():
             Fs.append(F + off)
             off += len(V)
     return (teeth_V, teeth_F), (np.vstack(Vs), np.vstack(Fs))
+
+
+def eye_mesh(side, nu=24, nv=14):
+    """UV-sphere eyeball whose front pole (v = 0) looks along EYE_DIR, so the iris texture is a
+    simple function of v."""
+    c = EYE_CENTER * np.array([1, side, 1])
+    f = normalize(EYE_DIR * np.array([1, side, 1]))
+    a = normalize(np.array([0.0, 0.0, 1.0]) - f * f[2])
+    b = np.cross(f, a)
+    U, Vv = np.meshgrid(np.linspace(0, 1, nu + 1), np.linspace(0, 1, nv + 1))
+    ang, pol = 2 * math.pi * U, math.pi * Vv
+    pts = c + EYE_RADIUS * (np.cos(pol)[..., None] * f + np.sin(pol)[..., None]
+                            * (np.cos(ang)[..., None] * a + np.sin(ang)[..., None] * b))
+    V = head_to_world(pts.reshape(-1, 3))
+    UV = np.stack([U.ravel(), Vv.ravel()], 1)
+    W = nu + 1
+    F = []
+    for i in range(nv):
+        for j in range(nu):
+            p00, p01, p10, p11 = i * W + j, i * W + j + 1, (i + 1) * W + j, (i + 1) * W + j + 1
+            if i < nv - 1:
+                F.append((p00, p10, p11))
+            if i > 0:
+                F.append((p00, p11, p01))
+    F = np.array(F)
+    cen = head_to_world(c[None])[0]
+    n = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+    if np.sum(np.einsum("ij,ij->i", n, V[F].mean(1) - cen)) < 0:     # keep the normals pointing out
+        F = F[:, ::-1]
+    return V, F, UV
+
+
+def eye_texture(size=256):
+    """Fire-fox eye: white-hot centre fading to amber and a dark rim, black slit pupil, catchlight."""
+    u, v = np.meshgrid((np.arange(size) + 0.5) / size, (np.arange(size) + 0.5) / size)
+    X = np.sin(math.pi * v) * np.cos(2 * math.pi * u)        # up
+    Y = np.sin(math.pi * v) * np.sin(2 * math.pi * u)        # sideways
+    stops = [0.0, 0.05, 0.17, 0.25, 0.30, 1.0]
+    cols = [(1.0, 0.97, 0.66), (1.0, 0.92, 0.45), (1.0, 0.68, 0.10), (0.88, 0.30, 0.03), (0.25, 0.06, 0.02), (0.12, 0.04, 0.03)]
+    col = np.stack([np.interp(v, stops, [c[k] for c in cols]) for k in range(3)], -1)
+    pupil = sstep(1.15, 0.85, (Y / 0.11) ** 2 + (X / 0.50) ** 2) * (v < 0.4)
+    col = col * (1 - pupil[..., None]) + np.array([0.02, 0.01, 0.01]) * pupil[..., None]
+    spark = sstep(0.11, 0.06, np.hypot(X - 0.30, Y + 0.22)) * (v < 0.4)
+    col = col * (1 - spark[..., None]) + np.array([1.0, 1.0, 0.95]) * spark[..., None]
+    return np.clip(col, 0, 1)
+
+
+def build_eyes(out_dir):
+    img = save_image("Eyes_Color", eye_texture(), os.path.join(out_dir, "Eyes_Color.png"))
+    V, F, UV = merge([eye_mesh(1), eye_mesh(-1)])
+    o = mesh_object("Wolf_Eyes", V, F, UV)
+    o.data.materials.append(textured_material("Eyes_Material", img, None, 0.2))
+    return o
 
 
 def build_body(quick):
@@ -1419,9 +1516,10 @@ def main():
     report = {}
 
     body_hi, body_lo = build_body(opts["quick"])
-    mane_hi, mane_lo = build_flame("Flames_Mane", build_mane_mass(), PINK_FIRE, (1.0, 0.92, 0.58), MANE_TRIS, opts["quick"])
+    mane_hi, mane_lo = build_flame("Flames_Mane", build_mane_mass(), MANE_FIRE, (1.0, 1.0, 0.80), MANE_TRIS, opts["quick"])
     fire_hi, fire_lo = build_flame("Flames_Fire", build_fire_mass(), ORANGE_FIRE, (1.0, 0.95, 0.55), FIRE_TRIS, opts["quick"])
     tails = build_tails_objects(rbx)
+    eyes = build_eyes(rbx)
 
     if opts["quick"]:
         mat = vcol_material("quick")
@@ -1437,7 +1535,7 @@ def main():
         bake(low, high, prefix, rbx)
         bpy.data.objects.remove(high, do_unlink=True)
 
-    game = [body_lo, mane_lo, fire_lo] + tails
+    game = [body_lo, eyes, mane_lo, fire_lo] + tails
     for o in game:
         report[o.name] = tri_count(o)
         if report[o.name] > 20000:
@@ -1445,7 +1543,7 @@ def main():
     log("triangles: " + ", ".join(f"{k} {v:,}" for k, v in report.items()) + f"; total {sum(report.values()):,}")
 
     zmin = to_roblox_space(game)
-    fbx = os.path.join(rbx, "FlameWolf_Statue.fbx")
+    fbx = os.path.join(rbx, "FlameWolf.fbx")
     export_fbx(game, fbx)
     log(f"exported {fbx} ({os.path.getsize(fbx) / 1e6:.1f} MB)")
 
