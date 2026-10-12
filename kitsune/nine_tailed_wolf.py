@@ -25,6 +25,7 @@ HOW TO RUN
   Options:   --render          render the preview views of the exported game model
              --views ref,side  only render some views
              --quick           coarse meshes, no bake (shape check only)
+             --preview-only    only re-render the previews from an existing <out>/roblox/FlameWolf.fbx
 """
 
 import math
@@ -62,7 +63,7 @@ VIEWS = {
 def _parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
     opts = {"out": os.path.join(os.path.expanduser("~"), "FlameWolf_Output"),
-            "render": False, "views": None, "quick": False}
+            "render": False, "views": None, "quick": False, "preview_only": False}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -76,6 +77,8 @@ def _parse_args():
             i += 1
         elif a == "--quick":
             opts["quick"] = True
+        elif a == "--preview-only":
+            opts["preview_only"] = True
         i += 1
     return opts
 
@@ -1110,7 +1113,7 @@ def body_color(P, N, ao=None):
     c = _mix(c, BIB, bib)
     # black stockings with a dark red-brown blend into the coat
     stock_hi = np.where(P[:, 0] > 0.0, 0.30, 0.25)
-    not_head = sstep(0.12, 0.20, np.linalg.norm(Ph - np.array([0.06, 0.0, -0.02]), axis=1))
+    not_head = sstep(0.02, 0.07, head_sdf(Ph) * HEAD_S)                      # the low head and open jaw stay coloured
     c = _mix(c, STOCK_EDGE, sstep(stock_hi + 0.07, stock_hi, z) * not_head)
     c = _mix(c, STOCK, sstep(stock_hi + 0.01, stock_hi - 0.05, z) * not_head)
     inner_dir = normalize(np.array([1.0, 0.0, 0.6]))
@@ -1568,7 +1571,45 @@ def uv_unwrap(obj):
     me.update()
 
 
-def bake(low, high, prefix, out_dir, cage=0.03, dist=0.07):
+def fill_bake_misses(imgs):
+    """Repairs bake errors, which otherwise show as dark specks: texels where the ray found nothing
+    (pure black colour) and texels where it hit the inside of a neighbouring flame tongue or tuft
+    (normal tilted more than ~70 degrees from the surface). Both maps are refilled there from the
+    surrounding good texels; any normal still bad afterwards is set flat."""
+    col = imgs["Color"]
+    w, h = col.size
+    px = {}
+    for key, img in imgs.items():
+        a = np.empty(w * h * 4, dtype=np.float32)
+        img.pixels.foreach_get(a)
+        px[key] = a.reshape(h, w, 4)
+    miss = (px["Color"][..., :3].sum(-1) < 0.004) | (px["Normal"][..., 2] < 0.675)
+    n_miss = int(miss.sum())
+    for _ in range(12):
+        if not miss.any():
+            break
+        ok = (~miss).astype(np.float32)
+        acc = {k: np.zeros((h, w, 3), dtype=np.float32) for k in px}
+        cnt = np.zeros((h, w), dtype=np.float32)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                o = np.roll(np.roll(ok, dy, 0), dx, 1)
+                cnt += o
+                for k in px:
+                    acc[k] += np.roll(np.roll(px[k][..., :3], dy, 0), dx, 1) * o[..., None]
+        fill = miss & (cnt > 0)
+        for k in px:
+            px[k][fill, :3] = acc[k][fill] / cnt[fill, None]
+        miss = miss & ~fill
+    flat = px["Normal"][..., 2] < 0.675
+    px["Normal"][flat, :3] = (0.5, 0.5, 1.0)
+    for key, img in imgs.items():
+        img.pixels.foreach_set(px[key].ravel())
+        img.save()
+    return n_miss
+
+
+def bake(low, high, prefix, out_dir, cage=0.045, dist=0.12):
     sc = bpy.context.scene
     sc.render.engine = "CYCLES"
     sc.cycles.device = "CPU"
@@ -1602,6 +1643,8 @@ def bake(low, high, prefix, out_dir, cage=0.03, dist=0.07):
         imgs[key].file_format = "PNG"
         imgs[key].save()
         log(f"baked {prefix} {key} ({time.time() - t0:.0f}s)")
+    n = fill_bake_misses(imgs)
+    log(f"{prefix}: repaired {n:,} texels (bake misses, flipped normals, gaps between UV islands)")
     low.data.materials.clear()
     low.data.materials.append(textured_material(prefix + "_Material", imgs["Color"], imgs["Normal"], 0.85))
     return imgs
@@ -1761,8 +1804,11 @@ def main():
     out = os.path.abspath(opts["out"])
     rbx = os.path.join(out, "roblox")
     os.makedirs(rbx, exist_ok=True)
-    reset_scene()
     report = {}
+    if opts["preview_only"]:
+        render_fbx_preview(os.path.join(rbx, "FlameWolf.fbx"), out, opts["views"], report)
+        return
+    reset_scene()
 
     body_hi, body_parts = build_body(opts["quick"])
     mane_hi, mane_lo = build_flame("Flames_Mane", build_mane_mass(), MANE_FIRE, (1.0, 1.0, 0.80), MANE_TRIS, opts["quick"])
@@ -1783,7 +1829,8 @@ def main():
         triangulate(low)
         uv_unwrap(low)
         apply_custom_normals(low)
-        bake(low, high, prefix, rbx)
+        tight = prefix in ("Mane", "Fire")          # narrow crevices between flame tongues
+        bake(low, high, prefix, rbx, cage=0.02 if tight else 0.03, dist=0.06 if tight else 0.08)
     for high in {id(h): h for _, h, _ in jobs}.values():
         bpy.data.objects.remove(high, do_unlink=True)
 
@@ -1800,30 +1847,43 @@ def main():
     log(f"exported {fbx} ({os.path.getsize(fbx) / 1e6:.1f} MB)")
 
     if opts["render"]:
-        # preview the exported FBX itself, so what you see is what Roblox gets
-        reset_scene()
-        bpy.ops.import_scene.fbx(filepath=fbx)
-        imported = [o for o in bpy.context.scene.objects if o.type == "MESH"]
-        log("re-imported: " + ", ".join(f"{o.name} {tri_count(o):,}" for o in imported))
-        for o in imported:
-            if not o.data.uv_layers:
-                raise BuildError(f"{o.name} lost its UVs in the FBX")
-        # back to the modelling frame so the preview cameras fit: Z up, wolf facing +X, base where
-        # it was; the scale is measured, so a unit mix-up in the FBX shows up here
-        root = bpy.data.objects.new("PreviewRoot", None)
-        bpy.context.scene.collection.objects.link(root)
-        bpy.context.view_layer.update()
-        pts = np.vstack([np.array([o.matrix_world @ v.co for v in o.data.vertices]) for o in imported])
-        size = pts.max(0) - pts.min(0)
-        report["fbx_size_studs"] = [round(float(x), 2) for x in size]
-        log(f"re-imported size (Blender units, x y z): {size.round(2)}")
-        for o in imported:
-            if o.parent is None:
-                o.parent = root
-        root.rotation_euler = (0.0, 0.0, math.radians(90))
-        root.location = (0.0, 0.0, zmin * STUDS_PER_UNIT - float(pts[:, 2].min()))
-        setup_render(STUDS_PER_UNIT)
-        render_views(out, opts["views"] or list(VIEWS), STUDS_PER_UNIT, "roblox")
+        render_fbx_preview(fbx, out, opts["views"], report)
+
+
+def render_fbx_preview(fbx, out, views, report):
+    """Renders the exported FBX itself, so what you see is what Roblox gets. It is imported the way
+    Roblox reads it (1 cm in the file = 1 stud), so the measured size is the size in studs."""
+    reset_scene()
+    sc = bpy.context.scene
+    sc.unit_settings.scale_length = 0.01
+    sc.unit_settings.length_unit = "CENTIMETERS"
+    bpy.ops.import_scene.fbx(filepath=fbx)
+    sc.unit_settings.scale_length = 1.0
+    sc.unit_settings.length_unit = "METERS"
+    imported = [o for o in sc.objects if o.type == "MESH"]
+    log("re-imported: " + ", ".join(f"{o.name} {tri_count(o):,}" for o in imported))
+    for o in imported:
+        if not o.data.uv_layers:
+            raise BuildError(f"{o.name} lost its UVs in the FBX")
+        if not o.data.materials or not any(n.type == "TEX_IMAGE" and n.image for n in o.data.materials[0].node_tree.nodes):
+            raise BuildError(f"{o.name} lost its texture in the FBX")
+    bpy.context.view_layer.update()
+    pts = np.vstack([np.array([o.matrix_world @ v.co for v in o.data.vertices]) for o in imported])
+    size = pts.max(0) - pts.min(0)
+    report["fbx_size_studs"] = [round(float(x), 1) for x in size]
+    log(f"size in Roblox (studs, x y z as imported): {size.round(1)}")
+    if not (10.0 < size.max() < 40.0):
+        raise BuildError(f"unexpected size in studs: {size}")
+    # back to the modelling frame so the preview cameras fit: Z up, fox facing +X, paws on z = 0
+    root = bpy.data.objects.new("PreviewRoot", None)
+    sc.collection.objects.link(root)
+    for o in imported:
+        if o.parent is None:
+            o.parent = root
+    root.rotation_euler = (0.0, 0.0, math.radians(90))
+    root.location = (0.0, 0.0, -float(pts[:, 2].min()))
+    setup_render(STUDS_PER_UNIT)
+    render_views(out, views or list(VIEWS), STUDS_PER_UNIT, "roblox")
 
 
 if __name__ == "__main__":
