@@ -26,7 +26,7 @@ Roblox game version (Blender preview of the exported meshes):
 | Version | What it is | Use it for |
 | --- | --- | --- |
 | **HQ / cinematic** | one continuous sculpted body, 353k glowing hair strands at medium (coat + 40k "flame fur" strands combed into flame tongues), lava-vein skin, nine solid flame tails that fade into the fur, layered eyes, 32 teeth, tongue, claws | Blender renders, promo art |
-| **Roblox** | body mesh (13,302 tris, baked colour/normal/roughness) + flame mesh (10,164 tris, fire-gradient texture) + 51-bone rig, one FBX | the game |
+| **Roblox** | body mesh (13,302 tris, baked colour/normal/roughness) + flame mesh (5,724 tris, the nine tails, fire-gradient texture) + 51-bone rig, one FBX | the game |
 
 **Final build (medium, Blender 5.2.2 LTS, 4-core CPU):** creature scale ×6.38 → 3.36 m /
 12.0 studs tall; Roblox size 5.4 × 15.2 × 12.0 studs (w × l × h, body). Build + Roblox bake
@@ -163,7 +163,7 @@ Measured on the final build; the Roblox checks re-import the exported FBX and po
 | Ears | Thick cupped pinnae, forward-curling rims, asymmetric torn notches, glowing rims, black tip tufts |
 | Mesh integrity | Roblox body voxel-remeshed (manifold) before decimation; tooth winding verified on both sides |
 | UVs | Smart UV on a smoothed copy + packed islands; flames mapped onto a gradient strip |
-| Polygon budget | Roblox body 13,302 tris, flames 10,164 tris (limit 20,000 per MeshPart) |
+| Polygon budget | Roblox body 13,302 tris, flames 5,724 tris (limit 20,000 per MeshPart) |
 | Rigging | 51 bones, no leaf bones; every vertex ≤ 4 influences, weights sum to 1.000. Posing tests: Jaw moves only the jaw (both sides evenly), Ear.L only the left ear, FireTail bones only their flames, FrontUpperLeg.L and BackLowerLeg.R only their own side, Head carries skull, ears, eyes and teeth together |
 | Export | −Z forward, +Y up, triangulated, textures embedded (Color, Normal, Roughness, Fire) |
 | Roblox import | Coordinates are in studs (1 unit = 1 stud), ~12 studs tall. **Not test-imported in Roblox Studio** (not available here): check the importer preview size and facing on first import |
