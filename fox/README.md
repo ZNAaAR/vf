@@ -25,7 +25,7 @@ Roblox game version (Blender preview of the exported meshes):
 
 | Version | What it is | Use it for |
 | --- | --- | --- |
-| **HQ / cinematic** | one continuous sculpted body, 313k glowing hair strands (medium), lava-vein skin, 13 groups of sculpted flame tongues (9 tails, mane, coat, legs, head crown), layered eyes, 32 teeth, tongue, claws | Blender renders, promo art |
+| **HQ / cinematic** | one continuous sculpted body, 353k glowing hair strands at medium (coat + 40k "flame fur" strands combed into flame tongues), lava-vein skin, nine solid flame tails that fade into the fur, layered eyes, 32 teeth, tongue, claws | Blender renders, promo art |
 | **Roblox** | body mesh (13,302 tris, baked colour/normal/roughness) + flame mesh (10,164 tris, fire-gradient texture) + 51-bone rig, one FBX | the game |
 
 **Final build (medium, Blender 5.2.2 LTS, 4-core CPU):** creature scale ×6.38 → 3.36 m /
@@ -75,12 +75,13 @@ Options after `--`: `--quality draft|medium|high`, `--render`, `--views front_3q
   amber on cheeks and throat, a dark ember mask around the eyes and muzzle (so the face reads),
   and charred lower legs and paws. Each hair glows more toward its tip. Under the fur the skin is
   dark magma with patchy glowing lava veins.
-* **Flames**: procedural flame tongues, leaf-shaped ribbons that start thin inside the fur,
-  widen, curl and flick back to a sharp tip. Their colour starts at the coat's crimson and runs
-  through hot pink, orange and amber to yellow-hot tips, glowing more toward the tip, so they
-  look like the coat itself is burning. Nine tails (fat core flame + wide curling tongues), a
-  layered mane, flames rising from back, flanks, hips and upper legs, a crown on the head and
-  cheeks. No fire on the feet.
+* **Flames that are part of the body**: the flames on the mane, back, flanks, hips, upper legs and
+  head are *hair*: tufts of glowing strands rooted in the skin and combed along S-curved flame
+  paths so they converge into flame tongues (outer strands stop early, giving flickering
+  sub-tips). Each strand starts in the coat's own colour at the root and runs hot pink → orange →
+  yellow-hot at the tip, glowing more toward the tip, so the fur itself burns. The nine tails are
+  solid flame shapes (fat core + wide curling tongues) whose roots are transparent, so they melt
+  into the burning fur on the rump. No fire on the feet.
 * **Details**: eyeball with procedural iris, slit pupil and strong glow, glass cornea, eyelid
   rims, wet nose, 32 teeth (saber canines), tongue, gums, 16 hooked claws, paw pads, cupped ears
   with torn notches, glowing rims and black tip tufts.
@@ -111,7 +112,9 @@ Folder `roblox/`:
   big tufts and crest spikes), voxel-remeshed, decimated, plus low-poly ears, eyes, nose, teeth
   and tongue; unwrapped on a smoothed copy and packed; fire colours, fur grooves (following the
   hair direction) and roughness baked from the detailed sources.
-* **Flame mesh**: low-poly versions of the same flame tongues, UV-mapped onto the gradient.
+* **Flame mesh**: low-poly versions of the nine tails and a broad flame mane, UV-mapped onto a
+  gradient whose roots are transparent (the other body flames are hair in the HQ version; in the
+  game the baked fire colours of the body carry them).
 * **Rig (51 bones)**: `Root → Hips → Spine1 → Spine2 → Chest → Neck → Head → Jaw`,
   `Ear.L/R → EarTip.L/R`, `FrontUpperLeg / FrontLowerLeg / FrontFoot .L/.R`,
   `BackUpperLeg / BackLowerLeg / BackFoot .L/.R`, and `FireTail1_1…_3` … `FireTail9_1…_3`
@@ -130,9 +133,11 @@ Folder `roblox/`:
 4. **Body textures**: add a **SurfaceAppearance** to `Fox_Roblox` with ColorMap =
    `FoxRoblox_Color.png`, NormalMap = `FoxRoblox_Normal.png`, RoughnessMap =
    `FoxRoblox_Roughness.png`.
-5. **Fire**: `Fox_Flames` already shows the pink→yellow gradient. For a real glow, either set its
-   `Material = Neon` (one colour, e.g. hot pink), or keep the texture and add a few
-   `PointLight`s (orange/pink, Range 10–16) inside the mane and tails. A `ParticleEmitter` with
+5. **Fire**: add a **SurfaceAppearance** to `Fox_Flames` with ColorMap = `FoxRoblox_Fire.png`
+   and **AlphaMode = Transparency**. That keeps the red→orange→yellow gradient and makes the
+   flame roots fade into the body instead of sticking out of it. Don't switch it to `Neon`
+   (Neon ignores the transparency, so the roots show as hard edges again). For a glow, add a few
+   `PointLight`s (orange/pink, Range 10–16) inside the mane and tails; a `ParticleEmitter` with
    embers on the tails sells it further.
 6. **Eyes**: add a small orange `PointLight` in the head (or neon parts) — Roblox has no emissive
    texture slot.
@@ -151,13 +156,13 @@ Measured on the final build; the Roblox checks re-import the exported FBX and po
 | Check | Result |
 | --- | --- |
 | Anatomy | Continuous SDF body; validation passed; all four paws flat on the ground (636 / 795 / 812 / 697 contact vertices) |
-| Fur coverage | 313,099 strands at medium; no fur on eyes, nose, lips or inside the mouth |
-| Fire | Flame roots match the coat colour and taper into the fur; 9 tails + mane + coat + legs + head crown; none on the feet |
+| Fur coverage | 353,426 strands at medium (incl. 40,327 flame-fur strands); no fur on eyes, nose, lips or inside the mouth |
+| Fire | Body flames are hair grown from the skin (no solid pieces stuck in); tail roots fade to transparent; none on the feet |
 | Eyes | Separate eyeball (iris fibres, limbal ring, slit pupil, glow), glass cornea, eyelid rims, slanted almond opening |
 | Ears | Thick cupped pinnae, forward-curling rims, asymmetric torn notches, glowing rims, black tip tufts |
 | Mesh integrity | Roblox body voxel-remeshed (manifold) before decimation; tooth winding verified on both sides |
 | UVs | Smart UV on a smoothed copy + packed islands; flames mapped onto a gradient strip |
 | Polygon budget | Roblox body 13,302 tris, flames 10,164 tris (limit 20,000 per MeshPart) |
-| Rigging | 51 bones, no leaf bones; every vertex ≤ 4 influences, weights sum to 1.000. Posing tests: Jaw moves only the jaw (both sides evenly), Ear.L only the left ear, FireTail bones only their flames, FrontUpperLeg.L and BackLowerLeg.R only their own side, Head carries skull, ears, eyes, teeth, head crown and mane together |
+| Rigging | 51 bones, no leaf bones; every vertex ≤ 4 influences, weights sum to 1.000. Posing tests: Jaw moves only the jaw (both sides evenly), Ear.L only the left ear, FireTail bones only their flames, FrontUpperLeg.L and BackLowerLeg.R only their own side, Head carries skull, ears, eyes and teeth together, and the mane follows Neck/Chest/Head |
 | Export | −Z forward, +Y up, triangulated, textures embedded (Color, Normal, Roughness, Fire) |
 | Roblox import | Coordinates are in studs (1 unit = 1 stud), ~12 studs tall. **Not test-imported in Roblox Studio** (not available here): check the importer preview size and facing on first import |

@@ -2749,8 +2749,12 @@ def create_roblox_flames(col, body_V, body_F, rng, out_dir):
     parts = build_fire_tails(rng, K=8, segs=6, sub_locks=9, sub_K=6, sub_segs=5)
     # only the mane gets flame meshes in the game version; small low-poly flames on the body, legs and
     # head read as spikes stuck into it, and the baked body texture already carries the fire colours
-    for kind, name, cnt, md in (("mane", "FireMane", 30, 0.026),):
-        parts.append(specs_to_mesh(name, flame_specs(kind, body_V, body_F, rng, count=cnt, K=6, min_dist=md), 5))
+    for kind, name, cnt, md in (("mane", "FireMane", 22, 0.030),):
+        specs = flame_specs(kind, body_V, body_F, rng, count=cnt, K=7, min_dist=md)
+        for sp in specs:                       # fewer, broader flame tongues read as a mane, not as spikes
+            sp["W"] *= 1.8
+            sp["thick"] = 0.30
+        parts.append(specs_to_mesh(name, specs, 6))
     Vs, Fs, Gs, ids, names, off = [], [], [], [], [], 0
     for i, (name, V, F, g) in enumerate(parts):
         Vs.append(V)
