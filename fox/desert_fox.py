@@ -2744,11 +2744,12 @@ def _distance_weights(obj, rig_bones, allowed, adjust=None):
 
 
 def create_roblox_flames(col, body_V, body_F, rng, out_dir):
-    """Low-poly flames (tails + coat flames) as their own mesh with a fire-gradient texture whose roots
+    """Low-poly flames (nine tails + mane) as their own mesh with a fire-gradient texture whose roots
     are transparent, so with SurfaceAppearance (AlphaMode = Transparency) they fade into the body."""
     parts = build_fire_tails(rng, K=8, segs=6, sub_locks=9, sub_K=6, sub_segs=5)
-    for kind, name, cnt, md in (("mane", "FireMane", 30, 0.026), ("body", "FireBody", 20, 0.036),
-                                ("legs", "FireLegs", 8, 0.030), ("head", "FireHead", 12, 0.015)):
+    # only the mane gets flame meshes in the game version; small low-poly flames on the body, legs and
+    # head read as spikes stuck into it, and the baked body texture already carries the fire colours
+    for kind, name, cnt, md in (("mane", "FireMane", 30, 0.026),):
         parts.append(specs_to_mesh(name, flame_specs(kind, body_V, body_F, rng, count=cnt, K=6, min_dist=md), 5))
     Vs, Fs, Gs, ids, names, off = [], [], [], [], [], 0
     for i, (name, V, F, g) in enumerate(parts):
