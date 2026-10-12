@@ -60,7 +60,7 @@ end
 if mane then
 	addLight(mane, Color3.fromRGB(255, 170, 60), 14, 1.5)
 end
-local eyes = find("Wolf_Eyes")
+local eyes = find("Fox_Eyes")
 if eyes then
 	addLight(eyes, Color3.fromRGB(255, 200, 80), 5, 2)
 end

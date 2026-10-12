@@ -42,7 +42,8 @@ import numpy as np
 
 STUDS_PER_UNIT = 12.0        # model units -> Roblox studs (wolf shoulder ~7 studs, tails ~16 studs high)
 TEX = 1024                   # texture size (Roblox maximum)
-BODY_TRIS = 16000
+BODY_TRIS = 18500
+HEAD_TRIS = 15000
 MANE_TRIS = 13000
 FIRE_TRIS = 15000
 SEED = 7
@@ -275,7 +276,13 @@ EYE_SOCKET = np.array([0.080, 0.062, 0.032])     # head-local, left side (+Y)
 EYE_CENTER = np.array([0.077, 0.057, 0.032])
 EYE_RADIUS = 0.0195
 EYE_DIR = np.array([0.55, 0.80, 0.06])           # where the left eye looks (head-local)
+EAR_ROOT = np.array([-0.030, 0.052, 0.072])
 EAR_TIP = np.array([-0.130, 0.105, 0.195])
+
+
+def ear_sdf(Ph, s):
+    return sd_flat_cone(Ph, EAR_ROOT * np.array([1, s, 1]), EAR_TIP * np.array([1, s, 1]),
+                        0.058, 0.006, (0.15, 0.85 * s, -0.45), 0.34)
 
 
 def head_to_world(p):
@@ -322,9 +329,7 @@ def head_sdf(Ph):
     d = np.minimum(d, sd_ellipsoid(Pj, (0.095, 0.0, -0.058), (0.09, 0.026, 0.010)))                # tongue
     for s in (1, -1):
         d = smax(d, -sd_sphere(Ph, EYE_SOCKET * np.array([1, s, 1]), 0.0225), 0.008)                # socket
-        a = np.array([-0.030, 0.052 * s, 0.072])
-        b = EAR_TIP * np.array([1, s, 1])
-        d = smin(d, sd_flat_cone(Ph, a, b, 0.058, 0.006, (0.15, 0.85 * s, -0.45), 0.34), 0.025)    # ear
+        d = smin(d, ear_sdf(Ph, s), 0.025)                                                          # ear
     return d
 
 
@@ -405,35 +410,188 @@ def body_sdf(P, fur=True):
     return d
 
 
-def _fur_ridges(P, seed):
-    """Carved fur: ridged noise stretched along the strand direction (back on the body, down on the
-    legs). Big clumps plus fine strands."""
-    leg = sstep(0.40, 0.26, P[:, 2])
-    cb = fbm(P * np.array([6.0, 22.0, 20.0]), 2, seed)
-    cl = fbm(P * np.array([22.0, 22.0, 6.0]), 2, seed + 5)
-    c = cb * (1 - leg) + cl * leg
-    clump = (1.0 - np.abs(c)) ** 2
-    sb = value_noise(P * np.array([9.0, 62.0, 56.0]), seed + 9)
-    sl = value_noise(P * np.array([62.0, 62.0, 9.0]), seed + 11)
-    strand = 1.0 - np.abs(sb * (1 - leg) + sl * leg)
-    return 0.68 * clump + 0.32 * strand
+# --- carved fur ----------------------------------------------------------------
+#
+# The coat is sculpted as overlapping fur locks (like shingles): each lock swells towards a
+# V-shaped tip that overhangs the next one, neighbouring locks are separated by creases, and fine
+# strand grooves run inside each lock. The locks flow backwards over the body, head and ruff and
+# downwards on the legs, chest front and rump. The colour is computed from the same field, so the
+# paint follows the carving instead of sitting on top of it.
+
+
+def worley2(X, Y, seed):
+    """2D cellular noise: distance to the nearest / second-nearest feature point and a random
+    value per cell."""
+    xi = np.floor(X).astype(np.int64)
+    yi = np.floor(Y).astype(np.int64)
+    F1 = np.full(X.shape, 9.0)
+    F2 = np.full(X.shape, 9.0)
+    cid = np.zeros(X.shape)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            cx, cy = xi + dx, yi + dy
+            k = np.zeros_like(cx)
+            px = cx + 0.1 + 0.8 * _hash3(cx, cy, k, seed)
+            py = cy + 0.1 + 0.8 * _hash3(cx, cy, k + 1, seed)
+            d = np.hypot(X - px, Y - py)
+            h = _hash3(cx, cy, k + 2, seed)
+            closer = d < F1
+            F2 = np.where(closer, F1, np.minimum(F2, d))
+            cid = np.where(closer, h, cid)
+            F1 = np.where(closer, d, F1)
+    return F1, F2, cid
+
+
+def _lock_layer(A, X, Y, seed):
+    """Locks for strands running towards +A; X is the cross coordinate in lock widths, Y spreads
+    the cells. Returns height, phase (1 = at the lock's tip), cell value, crease, strands."""
+    F1, F2, cid = worley2(X, Y, seed)
+    t = A + cid * 1.7 + 0.45 * F1                  # lock centres reach furthest: pointed tips
+    phase = t - np.floor(t)
+    crease = sstep(0.0, 0.25, F2 - F1)             # groove between neighbouring locks
+    strands = 0.5 + 0.5 * np.sin(2 * math.pi * (X * 2.5 + 0.35 * cid))
+    h = phase ** 1.4 * (1.0 - 0.8 * F1) * (0.35 + 0.65 * crease)
+    return h, phase, cid, crease, strands
+
+
+class NormalField:
+    """Surface normal of the un-furred body anywhere near it (gradient of a coarse SDF grid,
+    trilinearly interpolated); used to orient the fur locks."""
+
+    def __init__(self, sdf, bmin, bmax, h):
+        self.bmin = np.asarray(bmin, dtype=np.float64)
+        self.h = h
+        shape = tuple(int(v) for v in np.ceil((np.asarray(bmax) - self.bmin) / h).astype(int) + 1)
+        g = np.stack(np.meshgrid(*[np.arange(n) for n in shape], indexing="ij"), -1).reshape(-1, 3)
+        P = self.bmin + g * h
+        S = np.concatenate([sdf(P[i:i + 400_000]) for i in range(0, len(P), 400_000)]).reshape(shape)
+        G = np.stack(np.gradient(S, h), -1)
+        self.G = G / np.maximum(np.linalg.norm(G, axis=-1, keepdims=True), 1e-9)
+        self.shape = np.array(shape)
+
+    def __call__(self, P):
+        q = (P - self.bmin) / self.h
+        i = np.clip(np.floor(q).astype(np.int64), 0, self.shape - 2)
+        f = np.clip(q - i, 0.0, 1.0)
+        out = np.zeros((len(P), 3))
+        for dx in (0, 1):
+            wx = f[:, 0] if dx else 1 - f[:, 0]
+            for dy in (0, 1):
+                wy = f[:, 1] if dy else 1 - f[:, 1]
+                for dz in (0, 1):
+                    wz = f[:, 2] if dz else 1 - f[:, 2]
+                    out += (wx * wy * wz)[:, None] * self.G[i[:, 0] + dx, i[:, 1] + dy, i[:, 2] + dz]
+        return normalize(out)
+
+
+NORMALS = None
+
+
+def body_normals(P):
+    global NORMALS
+    if NORMALS is None:
+        t0 = time.time()
+        NORMALS = NormalField(lambda Q: body_sdf(Q, fur=False), BODY_BOX[0], BODY_BOX[1], 0.009)
+        log(f"fur orientation field ready ({time.time() - t0:.0f}s)")
+    return NORMALS(P)
+
+
+def _neck_frame():
+    x = normalize(neck_end() - NECK_A)               # towards the head; strands run the other way
+    y = normalize(np.cross(np.array([0.0, 0.0, 1.0]), x))
+    z = np.cross(x, y)
+    return np.stack([x, y, z])
+
+
+FRAME_BACK = np.eye(3)                                             # strands run towards -X
+FRAME_DOWN = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])   # strands run towards -Z
+
+
+def _region_weights(P, N):
+    Ph = world_to_head(P)
+    w_head = sstep(0.17, 0.11, np.linalg.norm(Ph - np.array([0.03, 0.0, 0.01]), axis=1))
+    w_ruff = sstep(0.27, 0.13, np.linalg.norm(P - ruff_center(), axis=1)) * (1 - w_head)
+    rest = np.clip(1 - w_head - w_ruff, 0, 1)
+    w_leg = sstep(0.42, 0.28, P[:, 2]) * rest
+    body = rest - w_leg
+    facing_x = np.abs(N[:, 0]) ** 2                    # chest front / rump: strands run down there
+    return dict(head=w_head, ruff=w_ruff, back=body * (1 - facing_x), down=w_leg + body * facing_x)
+
+
+# (frame, strand length, lock width, seed) per region; sizes in model units
+FUR_LAYERS = {
+    "back": (FRAME_BACK, 0.080, 0.022, 31),
+    "down": (FRAME_DOWN, 0.055, 0.017, 37),
+    "ruff": (None, 0.130, 0.036, 41),
+    "head": (None, 0.045, 0.015, 43),
+}
+
+
+def fur_field(P, N=None):
+    """Blended lock field: height in [0, ~1.1] plus colouring channels."""
+    if N is None:
+        N = body_normals(P)
+    W = _region_weights(P, N)
+    n = len(P)
+    acc = {k: np.zeros(n) for k in ("h", "phase", "cid", "crease", "strands", "w")}
+    for region, (frame, L, Wd, seed) in FUR_LAYERS.items():
+        w = W[region]
+        m = w > 0.02
+        if not m.any():
+            continue
+        if region == "head":
+            R = HEAD_R                                        # head-local: x along the snout
+            Pl = world_to_head(P[m]) * HEAD_S
+            Nl = N[m] @ R
+        else:
+            R = _neck_frame() if region == "ruff" else frame
+            Pl = P[m] @ R.T
+            Nl = N[m] @ R.T
+        A = -Pl[:, 0] / L
+        # tri-planar over the two cross axes: where the surface faces local Y the locks are laid
+        # out along local Z, and the other way round
+        wy, wz = Nl[:, 1] ** 4, Nl[:, 2] ** 4
+        s = np.maximum(wy + wz, 1e-6)
+        wy, wz = wy / s, wz / s
+        out = np.zeros((5, int(m.sum())))
+        for wt, X, Y, sd in ((wy, Pl[:, 2], Pl[:, 1], seed), (wz, Pl[:, 1], Pl[:, 2], seed + 1)):
+            sel = wt > 0.02
+            if sel.any():
+                layer = _lock_layer(A[sel], X[sel] / Wd, Y[sel] / Wd * 0.5, sd)
+                for k in range(5):
+                    out[k, sel] += wt[sel] * layer[k]
+        for k, key in enumerate(("h", "phase", "cid", "crease", "strands")):
+            acc[key][m] += w[m] * out[k]
+        acc["w"][m] += w[m]
+    wsum = np.maximum(acc.pop("w"), 1e-6)
+    return {k: v / wsum for k, v in acc.items()}
 
 
 def fur_amplitude(P):
     d_ruff = np.linalg.norm(P - ruff_center(), axis=1)
-    amp = 0.0085 + 0.026 * sstep(0.24, 0.08, d_ruff)
+    amp = 0.010 + 0.022 * sstep(0.26, 0.10, d_ruff)
+    amp = amp * (1 - 0.45 * sstep(0.42, 0.28, P[:, 2]))                                          # shorter on legs
     Ph = world_to_head(P)
     cheek = sstep(0.10, 0.03, np.linalg.norm((Ph - np.array([-0.005, 0.0, -0.01])) * np.array([1.0, 0.5, 1.0]), axis=1))
-    amp = amp + 0.012 * cheek
+    amp = amp + 0.006 * cheek
+    head = sstep(0.17, 0.11, np.linalg.norm(Ph - np.array([0.03, 0.0, 0.01]), axis=1))
+    amp = amp * (1 - 0.55 * head * (1 - cheek))                                                 # short fur on the face
     smooth_face = sstep(0.05, 0.12, np.linalg.norm(Ph - np.array([0.20, 0.0, -0.02]), axis=1))   # muzzle stays sleek
     smooth_face *= sstep(0.0, 0.08, np.linalg.norm(Ph - np.array([0.08, 0.0, 0.03]), axis=1))     # around the eyes
     smooth_face *= sstep(0.02, 0.06, mouth_cavity(Ph))                                          # lips and gums
-    paws = sstep(0.04, 0.12, P[:, 2] - 0.0)
+    paws = sstep(0.04, 0.12, P[:, 2])
     return amp * smooth_face * paws
 
 
 def fur_displacement(P):
-    return fur_amplitude(P) * (_fur_ridges(P, 3) - 0.45)
+    amp = fur_amplitude(P)
+    out = np.zeros(len(P))
+    m = amp > 1e-5
+    if m.any():
+        f = fur_field(P[m])
+        out[m] = amp[m] * (f["h"] + 0.12 * f["strands"] - 0.45)
+    return out
+
 
 
 # =============================================================================
@@ -914,49 +1072,86 @@ def build_fire_mass():
 # COLOURS
 # =============================================================================
 
-FUR_ORANGE = np.array([0.93, 0.40, 0.10])
-FUR_RED = np.array([0.70, 0.15, 0.05])
-FUR_CREAM = np.array([1.00, 0.80, 0.45])
-FUR_TIP = np.array([1.00, 0.74, 0.26])
-FUR_BLACK = np.array([0.10, 0.07, 0.06])
+COAT_DARK = np.array([0.50, 0.08, 0.035])      # deep red saddle
+COAT_MID = np.array([0.86, 0.26, 0.05])       # red-orange
+COAT_LIGHT = np.array([0.99, 0.47, 0.10])     # bright orange flanks, shoulders, face
+COAT_TIP = np.array([1.00, 0.76, 0.34])       # golden lock tips
+BIB = np.array([1.00, 0.91, 0.78])            # cream-white chest, throat, cheeks
+STOCK = np.array([0.075, 0.055, 0.05])        # black legs and ear backs
+STOCK_EDGE = np.array([0.32, 0.09, 0.04])
 
 
 def _mix(c, target, w):
     return c * (1 - w[:, None]) + np.asarray(target) * w[:, None]
 
 
-def body_color(P, N):
-    """Fire fox coat: orange body, darker red saddle, cream chest and throat, black stockings and
-    ear tips; the carved fur ridges burn yellow at their tips."""
-    rid = _fur_ridges(P, 3)
+def body_color(P, N, ao=None):
+    """Fire fox coat. Large areas are smooth anatomical gradients (red saddle, orange sides, cream
+    bib, black stockings); all small-scale variation comes from the carved fur locks and from
+    ambient occlusion, so the colour follows the sculpt."""
     Ph = world_to_head(P)
     Pj = head_to_jaw(Ph)
-    c = np.tile(FUR_ORANGE, (len(P), 1))
-    saddle = sstep(0.50, 0.66, P[:, 2]) * sstep(-0.1, 0.6, N[:, 2]) * sstep(0.30, 0.05, P[:, 0])
-    c = _mix(c, FUR_RED, 0.75 * saddle)
-    throat = sstep(0.05, 0.18, -N[:, 2] + 0.25 * N[:, 0]) * sstep(-0.10, 0.10, P[:, 0]) * sstep(0.56, 0.42, P[:, 2])
-    chest = sstep(0.17, 0.06, np.linalg.norm((P - np.array([0.33, 0.0, 0.40])) * np.array([1.0, 0.8, 0.7]), axis=1))
-    jaw_under = sstep(0.0, -0.035, Ph[:, 2]) * sstep(-0.06, 0.02, Ph[:, 0]) * sstep(0.10, 0.04, Ph[:, 0])
-    chin = sstep(0.0, 0.5, -(N @ HEAD_R)[:, 2]) * sstep(-0.04, -0.07, Pj[:, 2]) * sstep(0.02, 0.06, Pj[:, 0])
-    c = _mix(c, FUR_CREAM, np.clip(0.85 * throat + chest + jaw_under + 0.8 * chin, 0, 1))
-    stock = sstep(0.27, 0.15, P[:, 2])
-    c = _mix(c, FUR_BLACK, 0.92 * stock)
+    Nh = N @ HEAD_R
+    z = P[:, 2]
+    c = np.tile(COAT_LIGHT, (len(P), 1))
+    c = _mix(c, COAT_MID, 0.55 * sstep(0.30, 0.58, z) * sstep(0.45, -0.2, P[:, 0]))
+    saddle = sstep(0.0, 0.75, N[:, 2]) * sstep(0.46, 0.62, z) * sstep(0.32, 0.0, P[:, 0])
+    c = _mix(c, COAT_DARK, 0.85 * saddle)
+    crown = sstep(0.2, 0.8, Nh[:, 2]) * sstep(0.0, 0.05, Ph[:, 2]) * sstep(0.17, 0.10, Ph[:, 0])
+    c = _mix(c, COAT_MID, 0.6 * crown)                                         # forehead and muzzle top
+    # cream bib: throat, chest, belly, cheeks, lips and chin
+    under = sstep(0.05, 0.55, -N[:, 2]) * sstep(0.50, 0.36, z) * sstep(-0.30, 0.0, P[:, 0])
+    chest = sstep(0.19, 0.07, np.linalg.norm((P - np.array([0.34, 0.0, 0.40])) * np.array([1.0, 0.8, 0.7]), axis=1))
+    throat = sstep(0.0, 0.5, -Nh[:, 2]) * sstep(-0.02, -0.06, Ph[:, 2]) * sstep(0.30, 0.12, np.linalg.norm(Ph, axis=1))
+    cheek = sstep(-0.005, -0.03, Ph[:, 2] - 0.15 * Ph[:, 0]) * sstep(0.17, 0.08, Ph[:, 0]) * sstep(-0.08, 0.0, Ph[:, 0])
+    chin = sstep(0.0, 0.5, -Nh[:, 2]) * sstep(-0.045, -0.07, Pj[:, 2]) * sstep(0.0, 0.05, Pj[:, 0])
+    lips = sstep(0.014, 0.005, mouth_cavity(Ph)) * sstep(0.03, 0.08, Ph[:, 0])
+    bib = np.clip(0.9 * under + chest + 0.9 * throat + cheek + 0.85 * chin + 0.7 * lips, 0, 1)
+    c = _mix(c, BIB, bib)
+    # black stockings with a dark red-brown blend into the coat
+    stock_hi = np.where(P[:, 0] > 0.0, 0.30, 0.25)
+    not_head = sstep(0.12, 0.20, np.linalg.norm(Ph - np.array([0.06, 0.0, -0.02]), axis=1))
+    c = _mix(c, STOCK_EDGE, sstep(stock_hi + 0.07, stock_hi, z) * not_head)
+    c = _mix(c, STOCK, sstep(stock_hi + 0.01, stock_hi - 0.05, z) * not_head)
+    inner_dir = normalize(np.array([1.0, 0.0, 0.6]))
     for s in (1, -1):
-        ear_tip = sstep(0.075, 0.03, np.linalg.norm(Ph - EAR_TIP * np.array([1, s, 1]), axis=1))
-        c = _mix(c, FUR_BLACK, 0.95 * ear_tip)
+        a, b = EAR_ROOT * np.array([1, s, 1]), EAR_TIP * np.array([1, s, 1])
+        along = np.clip(((Ph - a) @ (b - a)) / float((b - a) @ (b - a)), 0, 1)
+        ear = sstep(0.014, 0.0, ear_sdf(Ph, s)) * sstep(0.15, 0.35, along)
+        inner = sstep(0.0, 0.45, Nh @ inner_dir)
+        c = _mix(c, STOCK, 0.92 * ear * np.clip(1 - inner + sstep(0.70, 0.85, along), 0, 1))     # dark backs, black tips
+        c = _mix(c, BIB * 0.92, 0.85 * ear * inner * sstep(0.85, 0.65, along))                 # cream inside
         liner = sstep(0.034, 0.024, np.linalg.norm(Ph - EYE_SOCKET * np.array([1, s, 1]), axis=1))
-        c = _mix(c, FUR_BLACK, 0.85 * liner)
-    # burning fur tips on the ridges, darker in the grooves
-    glow = sstep(0.55, 0.95, rid) * (1 - 0.8 * stock)
-    c = _mix(c, FUR_TIP, 0.45 * glow)
-    c = c * (0.72 + 0.34 * rid[:, None])
-    mouth = sstep(0.012, -0.004, mouth_cavity(Ph))
-    c = _mix(c, np.array([0.32, 0.06, 0.06]), mouth)
+        c = _mix(c, STOCK, 0.9 * liner)
+    # fur locks: per-lock tone, golden tips, darker roots and creases, strands
+    f = fur_field(P)                   # same orientation field as the carving, so colour and relief agree
+    amp = np.clip(fur_amplitude(P) / 0.012, 0, 1)
+    c = c * (1.0 + 0.12 * (f["cid"] - 0.5) * amp)[:, None]
+    lum = c @ np.array([0.30, 0.59, 0.11])
+    tipw = sstep(0.62, 0.97, f["phase"]) * f["crease"] * amp * sstep(0.10, 0.45, lum)   # no gold on black legs
+    c = _mix(c, np.minimum(c * 1.25 + 0.10, 1.0) * 0.5 + COAT_TIP * 0.5, 0.65 * tipw)
+    c = c * (1 - 0.30 * amp * sstep(0.30, 0.0, f["phase"]))[:, None]
+    c = c * (0.80 + 0.20 * (1 - amp + amp * f["crease"]))[:, None]
+    c = c * (0.92 + 0.08 * f["strands"])[:, None]
+    if ao is not None:
+        c = c * (0.42 + 0.58 * ao)[:, None]
+    # mouth, tongue, nose
+    mouth = sstep(0.005, -0.003, mouth_cavity(Ph))
+    c = _mix(c, np.array([0.30, 0.05, 0.06]), mouth)
     tongue = sstep(0.006, -0.002, sd_ellipsoid(Pj, (0.095, 0.0, -0.058), (0.09, 0.026, 0.010)))
-    c = _mix(c, np.array([0.62, 0.20, 0.22]), tongue)
+    c = _mix(c, np.array([0.70, 0.24, 0.26]), tongue)
     nose = sstep(0.012, 0.0, sd_sphere(Ph, NOSE_C, NOSE_R))
-    c = _mix(c, np.array([0.06, 0.05, 0.05]), nose)
+    c = _mix(c, np.array([0.045, 0.04, 0.04]), nose)
     return np.clip(c, 0, 1)
+
+
+def sdf_ao(sdf, V, N):
+    """Ambient occlusion from the distance field: how much the surface is hemmed in nearby."""
+    occ = np.zeros(len(V))
+    for delta, w in ((0.012, 0.45), (0.028, 0.30), (0.060, 0.25)):
+        d = np.concatenate([sdf(V[i:i + 300_000] + N[i:i + 300_000] * delta) for i in range(0, len(V), 300_000)])
+        occ += w * np.clip((delta - d) / delta, 0, 1)
+    return np.clip(1.0 - 1.25 * occ, 0, 1)
 
 
 # =============================================================================
@@ -1260,42 +1455,96 @@ def eye_texture(size=256):
 def build_eyes(out_dir):
     img = save_image("Eyes_Color", eye_texture(), os.path.join(out_dir, "Eyes_Color.png"))
     V, F, UV = merge([eye_mesh(1), eye_mesh(-1)])
-    o = mesh_object("Wolf_Eyes", V, F, UV)
+    o = mesh_object("Fox_Eyes", V, F, UV)
     o.data.materials.append(textured_material("Eyes_Material", img, None, 0.2))
     return o
 
 
+def head_labels(V, F):
+    """Splits the game mesh into head (head, ruff, upper neck, teeth) and body, so each gets its own
+    1024 px texture. The cut follows where the ruff meets the neck and shoulders; a few smoothing
+    passes keep it clean."""
+    C = V[F].mean(1)
+    d_head = np.minimum(head_sdf(world_to_head(C)) * HEAD_S,
+                        sd_ellipsoid(C, ruff_center(), (0.125, 0.165, 0.165)))
+    for root, tip, r in RUFF_TUFTS:
+        d_head = np.minimum(d_head, sd_round_cone(C, root, tip, r, 0.004))
+    d_body = np.minimum(torso_sdf(C), sd_round_cone(C, NECK_A, neck_end(), 0.140, 0.105))
+    for leg in LEGS.values():
+        d_body = np.minimum(d_body, leg_sdf(C, leg))
+    lab = (d_head < d_body).astype(np.float64)
+    for _ in range(6):
+        vl = np.zeros(len(V))
+        cnt = np.zeros(len(V))
+        for k in range(3):
+            np.add.at(vl, F[:, k], lab)
+            np.add.at(cnt, F[:, k], 1)
+        vl /= np.maximum(cnt, 1)
+        lab = (vl[F].mean(1) > 0.5).astype(np.float64)
+    return lab > 0.5
+
+
+CUSTOM_NORMALS = {}
+
+
 def build_body(quick):
     log("body: sampling high-res sculpt")
-    h_hi = 0.008 if quick else 0.0036
+    h_hi = 0.005 if quick else 0.0032
     V, F = surface_nets(body_sdf, *BODY_BOX, h_hi)
     V, F = largest_component(V, F)
-    V = taubin_smooth(V, F, 2)
+    V = taubin_smooth(V, F, 1)
     F = tri_faces(F)
     N = vertex_normals(V, F)
-    C = body_color(V, N)
+    t0 = time.time()
+    ao = sdf_ao(body_sdf, V, N)
+    log(f"body: ambient occlusion ({time.time() - t0:.0f}s)")
+    C = body_color(V, N, ao)
     (tV, tF), (cV, cF) = build_teeth_claws()
     allV = np.vstack([V, tV, cV])
     allF = np.vstack([F, tF + len(V), cF + len(V) + len(tV)])
-    allC = np.vstack([C, np.tile([0.86, 0.82, 0.70], (len(tV), 1)), np.tile([0.16, 0.15, 0.15], (len(cV), 1))])
-    hi = mesh_object("Bake_WolfHigh", allV, allF)
+    allC = np.vstack([C, np.tile([0.92, 0.88, 0.78], (len(tV), 1)), np.tile([0.10, 0.08, 0.08], (len(cV), 1))])
+    hi = mesh_object("Bake_FoxHigh", allV, allF)
     set_vcol(hi, allC)
     log(f"body high-res: {len(allF):,} tris")
     if quick:
-        return hi, hi
-    log("body: low-poly game mesh")
-    lV, lF = surface_nets(lambda P: body_sdf(P, fur=True), *BODY_BOX, 0.0085)
+        return hi, []
+    log("body: low-poly game meshes")
+    lV, lF = surface_nets(body_sdf, *BODY_BOX, 0.0070)
     lV, lF = largest_component(lV, lF)
-    lV = taubin_smooth(lV, lF, 3)
-    low = mesh_object("Wolf_Body", lV, tri_faces(lF))
-    decimate_to(low, BODY_TRIS - len(tF) - len(cF))
-    lv, lt = mesh_arrays(low)
-    bpy.data.objects.remove(low, do_unlink=True)
-    allV = np.vstack([lv, tV, cV])
-    allF = np.vstack([lt, tF + len(lv), cF + len(lv) + len(tV)])
-    low = mesh_object("Wolf_Body", allV, allF)
-    log(f"body low-poly: {tri_count(low):,} tris")
-    return hi, low
+    lV = taubin_smooth(lV, lF, 2)
+    lF = tri_faces(lF)
+    total = HEAD_TRIS + BODY_TRIS
+    for attempt in range(3):
+        tmp = mesh_object("tmp_body", lV, lF)
+        decimate_to(tmp, total - len(tF) - len(cF))
+        dv, dt = mesh_arrays(tmp)
+        bpy.data.objects.remove(tmp, do_unlink=True)
+        aV = np.vstack([dv, tV, cV])
+        aF = np.vstack([dt, tF + len(dv), cF + len(dv) + len(tV)])
+        lab = head_labels(aV, aF)
+        n_head, n_body = int(lab.sum()), int((~lab).sum())
+        scale = min(HEAD_TRIS / max(n_head, 1), BODY_TRIS / max(n_body, 1))
+        if scale >= 0.995:
+            break
+        total = int(total * scale * 0.99)
+    Nv = vertex_normals(aV, aF)
+    parts = []
+    for name, sel in (("Fox_Head", lab), ("Fox_Body", ~lab)):
+        Fs = aF[sel]
+        used = np.unique(Fs)
+        remap = np.full(len(aV), -1)
+        remap[used] = np.arange(len(used))
+        o = mesh_object(name, aV[used], remap[Fs])
+        CUSTOM_NORMALS[name] = Nv[used]          # whole-mesh normals: no shading seam at the cut
+        parts.append(o)
+        log(f"{name}: {tri_count(o):,} tris")
+    return hi, parts
+
+
+def apply_custom_normals(obj):
+    Ns = CUSTOM_NORMALS.get(obj.name)
+    if Ns is not None:
+        obj.data.normals_split_custom_set_from_vertices([tuple(n) for n in Ns])
 
 
 def uv_unwrap(obj):
@@ -1515,7 +1764,7 @@ def main():
     reset_scene()
     report = {}
 
-    body_hi, body_lo = build_body(opts["quick"])
+    body_hi, body_parts = build_body(opts["quick"])
     mane_hi, mane_lo = build_flame("Flames_Mane", build_mane_mass(), MANE_FIRE, (1.0, 1.0, 0.80), MANE_TRIS, opts["quick"])
     fire_hi, fire_lo = build_flame("Flames_Fire", build_fire_mass(), ORANGE_FIRE, (1.0, 0.95, 0.55), FIRE_TRIS, opts["quick"])
     tails = build_tails_objects(rbx)
@@ -1529,13 +1778,16 @@ def main():
         render_views(out, opts["views"] or ["ref", "side"], 1.0, "quick")
         return
 
-    for low, high, prefix in ((body_lo, body_hi, "Wolf"), (mane_lo, mane_hi, "Mane"), (fire_lo, fire_hi, "Fire")):
+    jobs = [(p, body_hi, p.name) for p in body_parts] + [(mane_lo, mane_hi, "Mane"), (fire_lo, fire_hi, "Fire")]
+    for low, high, prefix in jobs:
         triangulate(low)
         uv_unwrap(low)
+        apply_custom_normals(low)
         bake(low, high, prefix, rbx)
+    for high in {id(h): h for _, h, _ in jobs}.values():
         bpy.data.objects.remove(high, do_unlink=True)
 
-    game = [body_lo, eyes, mane_lo, fire_lo] + tails
+    game = body_parts + [eyes, mane_lo, fire_lo] + tails
     for o in game:
         report[o.name] = tri_count(o)
         if report[o.name] > 20000:
