@@ -104,7 +104,7 @@ Folder `roblox/`:
 
 | File | What |
 | --- | --- |
-| `DesertFox_Roblox.fbx` | armature + `Fox_Roblox` (body) + `Fox_Flames` (all fire), textures embedded |
+| `DesertFox_Roblox.fbx` | armature + `Fox_Roblox` (body) + `Fox_Flames` (the nine flame tails), textures embedded |
 | `FoxRoblox_Color.png` / `_Normal.png` / `_Roughness.png` | 1024 px body maps (normal map is OpenGL / +Y) |
 | `FoxRoblox_Fire.png` | the fire gradient used by the flame mesh |
 
@@ -112,9 +112,10 @@ Folder `roblox/`:
   big tufts and crest spikes), voxel-remeshed, decimated, plus low-poly ears, eyes, nose, teeth
   and tongue; unwrapped on a smoothed copy and packed; fire colours, fur grooves (following the
   hair direction) and roughness baked from the detailed sources.
-* **Flame mesh**: low-poly versions of the nine tails and a broad flame mane, UV-mapped onto a
-  gradient whose roots are transparent (the other body flames are hair in the HQ version; in the
-  game the baked fire colours of the body carry them).
+* **Flame mesh**: low-poly versions of the nine tails, UV-mapped onto a gradient whose roots are
+  transparent so they fade into the rump. The flames on the mane, back, legs and head are hair in
+  the HQ version; in the game they are part of the baked body texture, because low-poly flame
+  shapes there look like blades stuck into the body.
 * **Rig (51 bones)**: `Root → Hips → Spine1 → Spine2 → Chest → Neck → Head → Jaw`,
   `Ear.L/R → EarTip.L/R`, `FrontUpperLeg / FrontLowerLeg / FrontFoot .L/.R`,
   `BackUpperLeg / BackLowerLeg / BackFoot .L/.R`, and `FireTail1_1…_3` … `FireTail9_1…_3`
@@ -137,7 +138,7 @@ Folder `roblox/`:
    and **AlphaMode = Transparency**. That keeps the red→orange→yellow gradient and makes the
    flame roots fade into the body instead of sticking out of it. Don't switch it to `Neon`
    (Neon ignores the transparency, so the roots show as hard edges again). For a glow, add a few
-   `PointLight`s (orange/pink, Range 10–16) inside the mane and tails; a `ParticleEmitter` with
+   `PointLight`s (orange/pink, Range 10–16) inside the neck and tails; a `ParticleEmitter` with
    embers on the tails sells it further.
 6. **Eyes**: add a small orange `PointLight` in the head (or neon parts) — Roblox has no emissive
    texture slot.
@@ -163,6 +164,6 @@ Measured on the final build; the Roblox checks re-import the exported FBX and po
 | Mesh integrity | Roblox body voxel-remeshed (manifold) before decimation; tooth winding verified on both sides |
 | UVs | Smart UV on a smoothed copy + packed islands; flames mapped onto a gradient strip |
 | Polygon budget | Roblox body 13,302 tris, flames 10,164 tris (limit 20,000 per MeshPart) |
-| Rigging | 51 bones, no leaf bones; every vertex ≤ 4 influences, weights sum to 1.000. Posing tests: Jaw moves only the jaw (both sides evenly), Ear.L only the left ear, FireTail bones only their flames, FrontUpperLeg.L and BackLowerLeg.R only their own side, Head carries skull, ears, eyes and teeth together, and the mane follows Neck/Chest/Head |
+| Rigging | 51 bones, no leaf bones; every vertex ≤ 4 influences, weights sum to 1.000. Posing tests: Jaw moves only the jaw (both sides evenly), Ear.L only the left ear, FireTail bones only their flames, FrontUpperLeg.L and BackLowerLeg.R only their own side, Head carries skull, ears, eyes and teeth together |
 | Export | −Z forward, +Y up, triangulated, textures embedded (Color, Normal, Roughness, Fire) |
 | Roblox import | Coordinates are in studs (1 unit = 1 stud), ~12 studs tall. **Not test-imported in Roblox Studio** (not available here): check the importer preview size and facing on first import |

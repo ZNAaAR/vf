@@ -1150,17 +1150,6 @@ def flame_specs(kind, body_V, body_F, rng, count=None, K=12, min_dist=None):
     return specs
 
 
-def specs_to_mesh(name, specs, segs):
-    Vs, Fs, Gs, off = [], [], [], 0
-    for sp in specs:
-        V, F, t = lock_mesh(sp["path"], sp["axis"], sp["W"], sp["thick"], segs)
-        Vs.append(V)
-        Fs += [tuple(i + off for i in face) for face in F]
-        Gs.append(np.clip(sp["g0"] + (1 - sp["g0"]) * t, 0, 1))
-        off += len(V)
-    return (name, np.concatenate(Vs), Fs, np.concatenate(Gs))
-
-
 def flame_tuft_strands(spec, n, k_pts, rng):
     """Hair strands that grow from the skin along a flame's centre line and converge into its tip:
     a flame tongue made of fur. Outer strands end earlier, which gives flickering sub-tips."""
@@ -2743,18 +2732,12 @@ def _distance_weights(obj, rig_bones, allowed, adjust=None):
         raise BuildError(f"{unweighted} vertices of {obj.name} have no skin weight")
 
 
-def create_roblox_flames(col, body_V, body_F, rng, out_dir):
-    """Low-poly flames (nine tails + mane) as their own mesh with a fire-gradient texture whose roots
-    are transparent, so with SurfaceAppearance (AlphaMode = Transparency) they fade into the body."""
+def create_roblox_flames(col, rng, out_dir):
+    """Low-poly nine tails as their own mesh with a fire-gradient texture whose roots are transparent,
+    so with SurfaceAppearance (AlphaMode = Transparency) they fade into the body."""
+    # only the tails get flame meshes in the game version: low-poly flames on the mane, body, legs and
+    # head read as blades stuck into it, and the baked body texture already carries the burning coat
     parts = build_fire_tails(rng, K=8, segs=6, sub_locks=9, sub_K=6, sub_segs=5)
-    # only the mane gets flame meshes in the game version; small low-poly flames on the body, legs and
-    # head read as spikes stuck into it, and the baked body texture already carries the fire colours
-    for kind, name, cnt, md in (("mane", "FireMane", 22, 0.030),):
-        specs = flame_specs(kind, body_V, body_F, rng, count=cnt, K=7, min_dist=md)
-        for sp in specs:                       # fewer, broader flame tongues read as a mane, not as spikes
-            sp["W"] *= 1.8
-            sp["thick"] = 0.30
-        parts.append(specs_to_mesh(name, specs, 6))
     Vs, Fs, Gs, ids, names, off = [], [], [], [], [], 0
     for i, (name, V, F, g) in enumerate(parts):
         Vs.append(V)
@@ -2797,42 +2780,20 @@ def create_roblox_flames(col, body_V, body_F, rng, out_dir):
                            "Emission Color": tex.outputs["Color"], "Emission Strength": 2.0})
     me.materials.append(mat)
     log(f"roblox flames: {triangle_count(obj):,} triangles")
-    return obj, np.concatenate(ids), names, rest_V
+    return obj, np.concatenate(ids), names
 
 
-def skin_flames(obj, rig_bones, part_of_vertex, part_names, rest_V):
+def skin_flames(obj, rig_bones, part_of_vertex, part_names):
+    """Each flame tail follows its own three bones, rooted on the hips."""
     names = [b[0] for b in rig_bones]
     allowed = np.zeros((len(part_of_vertex), len(names)), dtype=bool)
     idx = {n: i for i, n in enumerate(names)}
-    trunk = ["Hips", "Spine1", "Spine2", "Chest", "Neck"]
-    legs = [n for n in names if "Leg" in n or "Foot" in n]
     for p, pname in enumerate(part_names):
-        m = part_of_vertex == p
-        if pname.startswith("FireTail"):
-            ok = [f"{pname}_{b}" for b in (1, 2, 3)] + ["Hips"]
-        elif pname == "FireMane":
-            ok = ["Neck", "Chest", "Spine2", "Head"]
-        elif pname == "FireHead":
-            ok = ["Head"]
-        elif pname == "FireBody":
-            ok = trunk + [n for n in legs if "Upper" in n]
-        elif pname == "FireLegs":
-            ok = legs
-        else:
+        if not pname.startswith("FireTail"):
             raise BuildError(f"No skin-weight rule for flame part {pname}")
-        for n in ok:
-            allowed[m, idx[n]] = True
-
-    def adjust(w, ix):
-        head_part = part_of_vertex == part_names.index("FireHead") if "FireHead" in part_names else False
-        fade = 1.0 - sstep(ATLAS_PIVOT[1] + 0.03, ATLAS_PIVOT[1] + 0.06, rest_V[:, 1])
-        w[:, ix["Head"]] *= np.where(head_part, 1.0, fade)
-        for n in names:                          # .L/.R bones never pull flames on the other side
-            sd = 1 if n.endswith(".L") else (-1 if n.endswith(".R") else 0)
-            if sd:
-                w[:, ix[n]] *= sstep(-0.015, 0.015, sd * rest_V[:, 0])
-
-    _distance_weights(obj, rig_bones, allowed, adjust)
+        for n in [f"{pname}_{b}" for b in (1, 2, 3)] + ["Hips"]:
+            allowed[part_of_vertex == p, idx[n]] = True
+    _distance_weights(obj, rig_bones, allowed)
 
 
 def create_rig(col, name="Fox_Rig"):
@@ -3109,8 +3070,7 @@ def _build(cfg, progress):
         rbx_dir = os.path.join(out_dir, "roblox")
         os.makedirs(rbx_dir, exist_ok=True)
         fox, part_of_vertex, part_names, rest_V, sources = create_roblox_mesh(q, rbx_col, ears, M, rng)
-        flames, f_parts, f_names, f_rest = create_roblox_flames(rbx_col, body_V, body_F,
-                                                                np.random.default_rng(SEED + 8), rbx_dir)
+        flames, f_parts, f_names = create_roblox_flames(rbx_col, np.random.default_rng(SEED + 8), rbx_dir)
         uv_unwrap(fox)
         progress(70)
         hq_parts = [e["obj"] for e in ears.values()] + [e["eye"] for e in eyes.values()] + [nose] + mouth
@@ -3118,7 +3078,7 @@ def _build(cfg, progress):
         progress(85)
         rig, bones = create_rig(rbx_col)
         skin_weights(fox, bones, part_of_vertex, part_names, rest_V)
-        skin_flames(flames, bones, f_parts, f_names, f_rest)
+        skin_flames(flames, bones, f_parts, f_names)
         for m in (fox, flames):
             mod = m.modifiers.new("Armature", "ARMATURE")
             mod.object = rig
